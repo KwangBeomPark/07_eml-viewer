@@ -8,17 +8,26 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
+from PySide6.QtGui import (
+    QColor,
+    QDesktopServices,
+    QKeySequence,
+    QShortcut,
+    QTextCharFormat,
+    QTextCursor,
+    QTextDocument,
+)
 from PySide6.QtWidgets import (
-    QComboBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QTabWidget,
     QTextBrowser,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
+from eml_viewer.gui.search_bar import SearchBarWidget
 
 try:
     from PySide6.QtWebEngineCore import (
@@ -36,7 +45,7 @@ except Exception:  # pragma: no cover - exercised only on minimal PySide install
     QWebEngineView = None
 
 from eml_viewer.models.email_data import ParsedEmail
-from eml_viewer.gui.i18n import current_language, tr
+from eml_viewer.gui.i18n import tr
 
 
 _TRANSPARENT_IMAGE_URI = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
@@ -109,7 +118,7 @@ else:
 class MessageBodyWidget(QWidget):
     """Displays the plain text and HTML bodies of an email."""
 
-    translate_requested = Signal(str, str, str)
+    open_in_browser_requested = Signal()
 
     _resource_attr_pattern = re.compile(
         r"(?P<prefix>\b(?:src|background)\s*=\s*)(?P<quote>[\"'])(?P<value>.*?)(?P=quote)",
@@ -135,8 +144,6 @@ class MessageBodyWidget(QWidget):
         self._inline_temp_dir: tempfile.TemporaryDirectory[str] | None = None
         self._current_email: ParsedEmail | None = None
         self._current_prepared_html = ""
-        self._last_translation_result = ""
-        self._last_translation_format = "text"
         self._base_point_size = self.font().pointSizeF() or 10.0
         self._zoom_percent = 100
         self._remote_images_auto_load = False
@@ -148,17 +155,14 @@ class MessageBodyWidget(QWidget):
         self._html_container = QWidget(self)
         self._html_view = self._create_html_view()
         self._html_browser = self._html_view
-        self._translation_view = self._create_html_view()
-        self._translation_browser = self._translation_view
         self._remote_notice_label = QLabel(self)
         self._load_remote_images_button = QPushButton(self)
+        self._open_browser_button = QPushButton(self)
         self._zoom_out_button = QPushButton("-", self)
         self._zoom_in_button = QPushButton("+", self)
         self._zoom_reset_button = QPushButton("100%", self)
         self._zoom_label = QLabel("100%", self)
         self._plain_notice_label = QLabel(self)
-        self._translate_button = QPushButton(self)
-        self._target_language_combo = QComboBox(self)
 
         self._plain_browser.setOpenExternalLinks(False)
         self._plain_browser.zoom_delta_requested.connect(self._change_zoom_by_steps)
@@ -167,17 +171,12 @@ class MessageBodyWidget(QWidget):
             self._html_view.zoom_delta_requested.connect(self._change_zoom_by_steps)
         elif QWebEngineView is not None and isinstance(self._html_view, QWebEngineView):
             self._html_view.zoom_delta_requested.connect(self._change_zoom_by_steps)
-        if isinstance(self._translation_view, ZoomTextBrowser):
-            self._translation_view.setOpenExternalLinks(False)
-            self._translation_view.zoom_delta_requested.connect(self._change_zoom_by_steps)
-        elif QWebEngineView is not None and isinstance(self._translation_view, QWebEngineView):
-            self._translation_view.zoom_delta_requested.connect(self._change_zoom_by_steps)
 
         self._zoom_out_button.clicked.connect(lambda: self._change_zoom_by_steps(-1))
         self._zoom_in_button.clicked.connect(lambda: self._change_zoom_by_steps(1))
         self._zoom_reset_button.clicked.connect(self.reset_zoom)
         self._load_remote_images_button.clicked.connect(self._allow_remote_images)
-        self._translate_button.clicked.connect(self._emit_translate_requested)
+        self._open_browser_button.clicked.connect(lambda: self.open_in_browser_requested.emit())
 
         reset_shortcut = QShortcut(QKeySequence("Ctrl+0"), self)
         reset_shortcut.activated.connect(self.reset_zoom)
@@ -201,24 +200,33 @@ class MessageBodyWidget(QWidget):
 
         self._tabs.addTab(self._plain_browser, "")
         self._tabs.addTab(self._html_container, "")
-        self._tabs.addTab(self._translation_view, "")
         self._tabs.currentChanged.connect(self._on_current_tab_changed)
         self._plain_notice_label.setVisible(False)
         self._plain_notice_label.setObjectName("plainNotice")
         self._remote_notice_label.setObjectName("remoteNotice")
 
         zoom_layout = QHBoxLayout()
-        zoom_layout.addWidget(self._target_language_combo)
-        zoom_layout.addWidget(self._translate_button)
+        zoom_layout.addWidget(self._open_browser_button)
         zoom_layout.addStretch(1)
         zoom_layout.addWidget(self._zoom_out_button)
         zoom_layout.addWidget(self._zoom_label)
         zoom_layout.addWidget(self._zoom_in_button)
         zoom_layout.addWidget(self._zoom_reset_button)
 
+        self._search_bar = SearchBarWidget(self)
+        self._search_bar.search_requested.connect(self._handle_search)
+        self._search_bar.search_cleared.connect(self._handle_search_cleared)
+
+        self._search_matches: list[QTextCursor] = []
+        self._current_match_index: int = -1
+        self._last_search_text: str = ""
+        self._last_search_case: bool = False
+        self._active_printer: object | None = None
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(zoom_layout)
+        layout.addWidget(self._search_bar)
         layout.addWidget(self._plain_notice_label)
         layout.addWidget(self._tabs)
 
@@ -233,34 +241,35 @@ class MessageBodyWidget(QWidget):
         self._zoom_percent = 100
         self._apply_zoom_controls()
         self._plain_browser.setPlainText(tr("message.plain_placeholder"))
-        self._clear_translation_result()
         self._set_html_placeholder(tr("message.html_placeholder"))
         self._tabs.setCurrentIndex(0)
         self._update_tab_dependent_controls()
-        self._update_translation_controls()
 
     def retranslate_ui(self) -> None:
         self._remote_notice_label.setText(tr("message.remote_blocked"))
         self._load_remote_images_button.setText(tr("message.remote_show"))
         self._plain_notice_label.setText(tr("message.generated_plain_notice"))
-        self._translate_button.setText(tr("translation.button"))
-        self._set_target_language_items()
+        self._open_browser_button.setText(tr("button.open_browser"))
+        self._search_bar.retranslate_ui()
         self._tabs.setTabText(0, "Plain Text")
         self._tabs.setTabText(1, "HTML")
-        self._tabs.setTabText(2, tr("translation.tab"))
         if self._current_email is None:
             self._plain_browser.setPlainText(tr("message.plain_placeholder"))
             self._set_html_placeholder(tr("message.html_placeholder"))
         else:
             self._render_email()
-        self._update_translation_controls()
 
     def set_email(self, email: ParsedEmail) -> None:
+        self._handle_search_cleared()
         self._current_email = email
         self._remote_images_allowed = self._remote_images_auto_load
-        self._clear_translation_result()
         self._render_email()
-        self._update_translation_controls()
+        if self._search_bar.is_open() and self._search_bar.query():
+            self._handle_search(
+                self._search_bar.query(),
+                True,
+                self._search_bar.is_case_sensitive(),
+            )
 
     def set_remote_images_auto_load(self, enabled: bool) -> None:
         self._remote_images_auto_load = bool(enabled)
@@ -321,10 +330,6 @@ class MessageBodyWidget(QWidget):
 
         point_size = self._base_point_size * self._zoom_percent / 100
         self._plain_browser.setStyleSheet(f"QTextBrowser {{ font-size: {point_size:.1f}pt; }}")
-        if isinstance(self._translation_view, ZoomTextBrowser):
-            self._translation_view.setStyleSheet(f"QTextBrowser {{ font-size: {point_size:.1f}pt; }}")
-        elif QWebEngineView is not None and isinstance(self._translation_view, QWebEngineView):
-            self._translation_view.setZoomFactor(self._zoom_percent / 100)
         if isinstance(self._html_view, ZoomTextBrowser):
             self._html_view.setStyleSheet(f"QTextBrowser {{ font-size: {point_size:.1f}pt; }}")
         elif QWebEngineView is not None and isinstance(self._html_view, QWebEngineView):
@@ -337,11 +342,133 @@ class MessageBodyWidget(QWidget):
         return f"{style}{html_body}"
 
     def _on_current_tab_changed(self, _index: int) -> None:
+        self._handle_search_cleared()
         self._update_tab_dependent_controls()
+        if self._search_bar.is_open() and self._search_bar.query():
+            self._handle_search(
+                self._search_bar.query(),
+                True,
+                self._search_bar.is_case_sensitive(),
+            )
+
+    def show_search_bar(self) -> None:
+        self._search_bar.show_and_focus()
+
+    def find_next(self) -> None:
+        if self._search_bar.is_open():
+            self._search_bar.find_next()
+        else:
+            self.show_search_bar()
+
+    def find_previous(self) -> None:
+        if self._search_bar.is_open():
+            self._search_bar.find_previous()
+        else:
+            self.show_search_bar()
+
+    def print_content(self, printer: object) -> None:
+        """현재 활성화된 탭의 본문을 인쇄합니다."""
+        self._active_printer = printer
+        is_plain = self._tabs.currentIndex() == 0 or isinstance(self._html_view, ZoomTextBrowser)
+        if is_plain:
+            browser = (
+                self._plain_browser
+                if self._tabs.currentIndex() == 0
+                else self._html_view
+            )
+            browser.document().print_(printer)
+            self._active_printer = None
+        else:
+            if QWebEngineView is not None and isinstance(self._html_view, QWebEngineView):
+                view = self._html_view
+                print_func = getattr(view, "print_", None) or getattr(view, "print", None)
+                if hasattr(view, "printFinished"):
+                    def _on_finish(ok: bool) -> None:
+                        self._active_printer = None
+                    view.printFinished.connect(_on_finish, Qt.ConnectionType.SingleShotConnection)
+
+                if print_func is not None:
+                    print_func(printer)
+                elif hasattr(view, "page"):
+                    view.page().print(printer, lambda ok: setattr(self, "_active_printer", None))
+
+    def _handle_search(self, text: str, forward: bool, case_sensitive: bool) -> None:
+        is_plain = self._tabs.currentIndex() == 0 or isinstance(self._html_view, ZoomTextBrowser)
+        if is_plain:
+            target_browser = self._plain_browser if self._tabs.currentIndex() == 0 else self._html_view
+            if text != self._last_search_text or case_sensitive != self._last_search_case:
+                self._last_search_text = text
+                self._last_search_case = case_sensitive
+                self._search_matches = []
+                doc = target_browser.document()
+                find_flags = QTextDocument.FindFlag(0)
+                if case_sensitive:
+                    find_flags |= QTextDocument.FindFlag.FindCaseSensitively
+                cursor = doc.find(text, 0, find_flags)
+                while not cursor.isNull():
+                    self._search_matches.append(cursor)
+                    cursor = doc.find(text, cursor, find_flags)
+                self._current_match_index = 0 if self._search_matches else -1
+            else:
+                if self._search_matches:
+                    if forward:
+                        self._current_match_index = (self._current_match_index + 1) % len(self._search_matches)
+                    else:
+                        self._current_match_index = (self._current_match_index - 1) % len(self._search_matches)
+
+            if not self._search_matches:
+                target_browser.setExtraSelections([])
+                self._search_bar.set_match_status(0, 0)
+                return
+
+            cur = self._search_matches[self._current_match_index]
+            target_browser.setTextCursor(cur)
+
+            fmt_match = QTextCharFormat()
+            fmt_match.setBackground(QColor(255, 255, 0, 140))
+            fmt_current = QTextCharFormat()
+            fmt_current.setBackground(QColor(255, 165, 0, 220))
+
+            selections: list[QTextEdit.ExtraSelection] = []
+            for idx, match_cursor in enumerate(self._search_matches):
+                sel = QTextEdit.ExtraSelection()
+                sel.cursor = match_cursor
+                sel.format = fmt_current if idx == self._current_match_index else fmt_match
+                selections.append(sel)
+            target_browser.setExtraSelections(selections)
+            self._search_bar.set_match_status(self._current_match_index + 1, len(self._search_matches))
+        else:
+            if QWebEngineView is not None and isinstance(self._html_view, QWebEngineView):
+                flags = QWebEnginePage.FindFlag(0)
+                if not forward:
+                    flags |= QWebEnginePage.FindFlag.FindBackward
+                if case_sensitive:
+                    flags |= QWebEnginePage.FindFlag.FindCaseSensitively
+
+                def on_found(res: object) -> None:
+                    if hasattr(res, "numberOfMatches") and hasattr(res, "activeMatch"):
+                        self._search_bar.set_match_status(res.activeMatch(), res.numberOfMatches())
+                    elif isinstance(res, bool):
+                        self._search_bar.set_match_status(1 if res else 0, 1 if res else 0)
+                    else:
+                        self._search_bar.set_match_status(1 if bool(res) else 0, 1 if bool(res) else 0)
+
+                self._html_view.findText(text, flags, on_found)
+
+    def _handle_search_cleared(self) -> None:
+        self._plain_browser.setExtraSelections([])
+        if isinstance(self._html_view, ZoomTextBrowser):
+            self._html_view.setExtraSelections([])
+        elif QWebEngineView is not None and isinstance(self._html_view, QWebEngineView):
+            self._html_view.findText("")
+        self._search_matches = []
+        self._current_match_index = -1
+        self._last_search_text = ""
 
     def _update_tab_dependent_controls(self) -> None:
         self._update_plain_notice_visibility()
         self._update_remote_controls()
+        self._open_browser_button.setEnabled(self._current_email is not None)
 
     def _update_plain_notice_visibility(self) -> None:
         is_plain_tab = self._tabs.currentWidget() == self._plain_browser
@@ -357,65 +484,14 @@ class MessageBodyWidget(QWidget):
         self._remote_notice_label.setVisible(has_blocked_remote)
         self._load_remote_images_button.setVisible(has_blocked_remote)
 
-    def source_text_for_translation(self) -> str:
+    def current_prepared_html(self) -> str:
         if self._current_email is None:
             return ""
-        if self._current_email.html_body.strip() and self._current_prepared_html.strip():
-            return self._current_prepared_html.strip()
-        return self._current_email.plain_body.strip()
-
-    def source_format_for_translation(self) -> str:
-        if self._current_email and self._current_email.html_body.strip() and self._current_prepared_html.strip():
-            return "html"
-        return "text"
-
-    def selected_translation_language(self) -> str:
-        return str(self._target_language_combo.currentData() or "ko")
-
-    def set_translation_enabled(self, enabled: bool) -> None:
-        self._translate_button.setEnabled(enabled and bool(self.source_text_for_translation()))
-        self._target_language_combo.setEnabled(enabled)
-
-    def set_translation_result(self, text: str, source_format: str = "text") -> None:
-        self._last_translation_result = text
-        self._last_translation_format = source_format
-        if source_format == "html":
-            self._set_translation_content(text)
-        else:
-            self._set_translation_content(self._plain_text_html(text))
-        self._tabs.setCurrentWidget(self._translation_view)
-        self._update_translation_controls()
-
-    def _emit_translate_requested(self) -> None:
-        source_text = self.source_text_for_translation()
-        if source_text:
-            self.translate_requested.emit(
-                source_text,
-                self.selected_translation_language(),
-                self.source_format_for_translation(),
-            )
-
-    def _update_translation_controls(self) -> None:
-        self._translate_button.setEnabled(bool(self.source_text_for_translation()))
-        self._target_language_combo.setEnabled(True)
-
-    def _set_target_language_items(self) -> None:
-        current = (
-            self.selected_translation_language()
-            if self._target_language_combo.count()
-            else (current_language() if current_language() in {"ko", "en"} else "ko")
-        )
-        if current not in {"ko", "en", "pl"}:
-            current = current_language() if current_language() in {"ko", "en"} else "ko"
-
-        self._target_language_combo.blockSignals(True)
-        self._target_language_combo.clear()
-        self._target_language_combo.addItem(tr("translation.language.ko"), "ko")
-        self._target_language_combo.addItem(tr("translation.language.en"), "en")
-        self._target_language_combo.addItem(tr("translation.language.pl"), "pl")
-        index = self._target_language_combo.findData(current)
-        self._target_language_combo.setCurrentIndex(index if index >= 0 else 0)
-        self._target_language_combo.blockSignals(False)
+        if self._current_prepared_html.strip():
+            return self._current_prepared_html
+        if self._current_email.html_body.strip():
+            return self._current_email.html_body
+        return self._plain_text_html(self._current_email.plain_body)
 
     def _create_html_view(self) -> QWidget:
         if QWebEngineView is None:
@@ -438,9 +514,6 @@ class MessageBodyWidget(QWidget):
 
     def _set_html_content(self, html_body: str) -> None:
         self._set_web_content(self._html_view, html_body, self._html_base_url())
-
-    def _set_translation_content(self, html_body: str) -> None:
-        self._set_web_content(self._translation_view, html_body, self._html_base_url())
 
     def _set_web_content(self, view: QWidget, html_body: str, base_url: QUrl) -> None:
         if isinstance(view, ZoomTextBrowser):
@@ -468,11 +541,6 @@ class MessageBodyWidget(QWidget):
         if QWebEngineView is not None and isinstance(self._html_view, QWebEngineView):
             self._html_view.setZoomFactor(self._zoom_percent / 100)
             self._html_view.setHtml(f"<html><body><p>{html.escape(message)}</p></body></html>")
-
-    def _clear_translation_result(self) -> None:
-        self._last_translation_result = ""
-        self._last_translation_format = "text"
-        self._set_translation_content("")
 
     def _plain_text_html(self, text: str) -> str:
         escaped = html.escape(text)

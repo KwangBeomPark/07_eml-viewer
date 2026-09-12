@@ -19,6 +19,7 @@ class AttachmentPanel(QWidget):
     """첨부파일 목록과 저장 버튼을 가진 화면입니다."""
 
     save_requested = Signal(object)
+    open_requested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -28,6 +29,7 @@ class AttachmentPanel(QWidget):
         self._title_label = QLabel(self)
         self._toggle_button = QPushButton(self)
         self._table = QTableWidget(0, 4, self)
+        self._open_button = QPushButton(self)
         self._save_button = QPushButton(self)
 
         self.retranslate_ui()
@@ -38,14 +40,18 @@ class AttachmentPanel(QWidget):
         self._table.verticalHeader().setVisible(False)
 
         self._toggle_button.clicked.connect(self._toggle_expanded)
+        self._open_button.setEnabled(False)
+        self._open_button.clicked.connect(self._emit_open_requested)
         self._save_button.setEnabled(False)
         self._save_button.clicked.connect(self._emit_save_requested)
         self._table.itemChanged.connect(self._update_button_state)
+        self._table.cellDoubleClicked.connect(self._on_cell_double_clicked)
 
         header_layout = QHBoxLayout()
         header_layout.addWidget(self._title_label)
         header_layout.addStretch(1)
         header_layout.addWidget(self._toggle_button)
+        header_layout.addWidget(self._open_button)
         header_layout.addWidget(self._save_button)
 
         layout = QVBoxLayout(self)
@@ -57,13 +63,14 @@ class AttachmentPanel(QWidget):
         self._table.setHorizontalHeaderLabels(
             ["", tr("attachment.table.filename"), tr("attachment.table.kind"), tr("attachment.table.size")]
         )
+        self._open_button.setText(tr("button.open_selected"))
         self._save_button.setText(tr("button.save_selected"))
         self._update_summary()
         self._toggle_button.setText(tr("button.collapse") if self._expanded else tr("button.expand"))
 
     def set_attachments(self, attachments: list[AttachmentInfo]) -> None:
         self._attachments = list(attachments)
-        self._expanded = False
+        self._expanded = bool(self._attachments)
         self._table.blockSignals(True)
         self._table.setRowCount(len(self._attachments))
 
@@ -110,12 +117,23 @@ class AttachmentPanel(QWidget):
 
     def _update_button_state(self) -> None:
         self._update_summary()
-        self._save_button.setEnabled(self._expanded and bool(self.selected_attachments()))
+        has_selection = self._expanded and bool(self.selected_attachments())
+        self._save_button.setEnabled(has_selection)
+        self._open_button.setEnabled(has_selection)
 
     def _emit_save_requested(self) -> None:
         attachments = self.selected_attachments()
         if attachments:
             self.save_requested.emit(attachments)
+
+    def _emit_open_requested(self) -> None:
+        attachments = self.selected_attachments()
+        if attachments:
+            self.open_requested.emit(attachments)
+
+    def _on_cell_double_clicked(self, row: int, column: int) -> None:
+        if column > 0 and 0 <= row < len(self._attachments):
+            self.open_requested.emit([self._attachments[row]])
 
     def _toggle_expanded(self) -> None:
         self._expanded = not self._expanded
@@ -134,6 +152,7 @@ class AttachmentPanel(QWidget):
         has_attachments = bool(self._attachments)
         self.setVisible(has_attachments)
         self._table.setVisible(has_attachments and self._expanded)
+        self._open_button.setVisible(has_attachments and self._expanded)
         self._save_button.setVisible(has_attachments and self._expanded)
         self._toggle_button.setVisible(has_attachments)
         self._toggle_button.setText(tr("button.collapse") if self._expanded else tr("button.expand"))

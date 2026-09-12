@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication
 from eml_viewer.gui import dialogs
 from eml_viewer.gui.i18n import set_language
 from eml_viewer.gui.main_window import MainWindow
+from eml_viewer.models.app_settings import AppSettings
 from eml_viewer.models.email_data import ParsedEmail
 from eml_viewer.services.attachment_service import AttachmentService
 from eml_viewer.services.eml_parser import EmlParser
@@ -28,28 +29,6 @@ class FakeUpdateService:
         self._result = result
 
     def check_for_updates(self) -> UpdateCheckResult:
-        return self._result
-
-
-class FakeTranslationService:
-    def __init__(self, result: str | Exception) -> None:
-        self._result = result
-        self.calls: list[tuple[str, str, str]] = []
-
-    def translate_text(self, text: str, target_language: str, progress_callback=None, cancel_event=None) -> str:
-        self.calls.append(("text", text, target_language))
-        if isinstance(self._result, Exception):
-            raise self._result
-        if progress_callback is not None:
-            progress_callback(1, 1)
-        return self._result
-
-    def translate_html_text(self, text: str, target_language: str, progress_callback=None, cancel_event=None) -> str:
-        self.calls.append(("html", text, target_language))
-        if isinstance(self._result, Exception):
-            raise self._result
-        if progress_callback is not None:
-            progress_callback(1, 1)
         return self._result
 
 
@@ -67,26 +46,60 @@ class MainWindowTest(unittest.TestCase):
     def _window(
         self,
         update_result: UpdateCheckResult,
-        translation_service: FakeTranslationService | None = None,
+        app_settings: AppSettings | None = None,
     ) -> MainWindow:
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
         parser = EmlParser()
         file_operations = FileOperationService()
         settings = SettingsService(Path(temp_dir.name) / "settings.json")
+        if app_settings is not None:
+            settings.save_settings(app_settings)
         window = MainWindow(
             parser=parser,
             attachment_service=AttachmentService(parser, file_operations),
             settings_service=settings,
             file_operation_service=file_operations,
             update_service=FakeUpdateService(update_result),
-            translation_service=translation_service,
         )
         self.addCleanup(window.close)
         if window._update_check_thread is not None:
             window._update_check_thread.wait(5000)
             QApplication.processEvents()
         return window
+
+    def test_offscreen_saved_geometry_is_centered_on_primary_screen(self) -> None:
+        window = self._window(
+            UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None),
+            app_settings=AppSettings(
+                window_x=10_000,
+                window_y=10_000,
+                window_width=800,
+                window_height=600,
+            ),
+        )
+
+        primary_screen = QApplication.primaryScreen()
+        self.assertIsNotNone(primary_screen)
+        available_geometry = primary_screen.availableGeometry()
+        geometry = window.geometry()
+
+        self.assertTrue(available_geometry.contains(geometry.center()))
+        self.assertLessEqual(geometry.width(), available_geometry.width())
+        self.assertLessEqual(geometry.height(), available_geometry.height())
+
+    def test_visible_saved_geometry_is_preserved(self) -> None:
+        window = self._window(
+            UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None),
+            app_settings=AppSettings(
+                window_x=50,
+                window_y=50,
+                window_width=500,
+                window_height=400,
+            ),
+        )
+
+        self.assertEqual(window.geometry().getRect(), (50, 50, 500, 400))
 
     def test_update_banner_shows_only_when_update_is_available(self) -> None:
         window = self._window(UpdateCheckResult("0.1.4", "0.1.5", "https://example.com", None))
@@ -128,7 +141,8 @@ class MainWindowTest(unittest.TestCase):
         self.assertEqual(window._to_label.text(), "To")
         self.assertEqual(window._cc_label.text(), "Cc")
         self.assertEqual(window._metadata_group.title(), "Email information")
-        self.assertEqual(window._body_widget._target_language_combo.currentData(), "en")
+        self.assertEqual(window._open_browser_action.text(), "Open in Browser")
+        self.assertEqual(window._body_widget._open_browser_button.text(), "Open in Browser")
 
     def test_subject_to_and_cc_copy_buttons_write_to_clipboard(self) -> None:
         window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
@@ -146,6 +160,7 @@ class MainWindowTest(unittest.TestCase):
         )
 
         clipboard = QApplication.clipboard()
+        self.assertIsNotNone(clipboard)
 
         window._subject_edit._copy_button.click()
         self.assertEqual(clipboard.text(), "Hello")
@@ -156,125 +171,90 @@ class MainWindowTest(unittest.TestCase):
         window._cc_edit._copy_button.click()
         self.assertEqual(clipboard.text(), "copy@example.com")
 
-    def test_translate_button_enables_after_email_is_displayed(self) -> None:
+    def test_open_browser_button_and_action_create_preview_file(self) -> None:
+        from unittest.mock import patch
+
         window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
-        self.assertFalse(window._body_widget._translate_button.isEnabled())
+        self.assertFalse(window._body_widget._open_browser_button.isEnabled())
 
         window._display_email(
             ParsedEmail(
-                subject="Hello",
+                subject="Hello Browser",
                 sender="sender@example.com",
                 recipients="receiver@example.com",
                 date="2026-06-27",
-                plain_body="Body",
-                html_body="",
+                plain_body="Plain Content",
+                html_body="<html><body><h1>Hello HTML</h1></body></html>",
                 source_path=Path("sample.eml"),
             )
         )
 
-        self.assertTrue(window._body_widget._translate_button.isEnabled())
+        self.assertTrue(window._body_widget._open_browser_button.isEnabled())
 
-    def test_translation_service_result_populates_translation_tab(self) -> None:
-        fake_translation = FakeTranslationService("Translated body")
-        window = self._window(
-            UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None),
-            translation_service=fake_translation,
-        )
-        window._translation_privacy_confirmed = True
+        preview_file = window._session_temp_dir / "preview.html"
+        self.assertFalse(preview_file.exists())
+
+        with patch("os.startfile", create=True) as mock_startfile:
+            # 1. Test button click triggers open in browser
+            window._body_widget._open_browser_button.click()
+            self.assertTrue(preview_file.exists())
+            self.assertEqual(mock_startfile.call_count, 1)
+
+            # 2. Test action shortcut/trigger
+            window._open_browser_action.trigger()
+            self.assertEqual(mock_startfile.call_count, 2)
+
+        content = preview_file.read_text(encoding="utf-8")
+        self.assertIn("Hello HTML", content)
+
+    def test_new_window_and_find_actions(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        mock_wm = unittest.mock.MagicMock()
+        window._window_manager = mock_wm
+
+        # 1. New Window Action
+        window._new_window_action.trigger()
+        mock_wm.create_window.assert_called_once()
+
+        # 2. Find Action
+        self.assertTrue(window._body_widget._search_bar.isHidden())
+        window._find_action.trigger()
+        self.assertFalse(window._body_widget._search_bar.isHidden())
+
+    def test_print_action_handles_no_email_or_cancel(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        # 이메일 로드 안 된 상태에서는 아무 작업도 하지 않음
+        window._print_action.trigger()
+
+    def test_print_action_delegates_to_body_widget(self) -> None:
+        from unittest.mock import patch, MagicMock
+
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
         window._display_email(
             ParsedEmail(
-                subject="Hello",
+                subject="Print Test",
                 sender="sender@example.com",
                 recipients="receiver@example.com",
                 date="2026-06-27",
-                plain_body="Body",
-                html_body="",
+                plain_body="Hello Print Plain",
+                html_body="<html><body>Hello Print HTML</body></html>",
                 source_path=Path("sample.eml"),
             )
         )
 
-        window._translate_body("Body", "pl")
-        self._wait_for_translation(window)
+        with patch("PySide6.QtPrintSupport.QPrintDialog") as mock_dialog_cls, \
+             patch("PySide6.QtPrintSupport.QPrinter"), \
+             patch.object(window._body_widget, "print_content") as mock_print_content:
+            mock_dialog = MagicMock()
+            mock_dialog.exec.return_value = 1
+            mock_dialog_cls.return_value = mock_dialog
+            mock_dialog_cls.DialogCode = MagicMock()
+            mock_dialog_cls.DialogCode.Accepted = 1
 
-        self.assertEqual(fake_translation.calls, [("text", "Body", "pl")])
-        self.assertEqual(window._body_widget._last_translation_result, "Translated body")
-        self.assertEqual(window._body_widget._last_translation_format, "text")
-        self.assertEqual(window._body_widget._tabs.currentWidget(), window._body_widget._translation_view)
-        self.assertTrue(window._body_widget._translate_button.isEnabled())
-
-    def test_html_translation_uses_prepared_html_source(self) -> None:
-        fake_translation = FakeTranslationService('<html><body><p>Translated</p><img src="file:///logo.png"></body></html>')
-        window = self._window(
-            UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None),
-            translation_service=fake_translation,
-        )
-        window._translation_privacy_confirmed = True
-        window._display_email(
-            ParsedEmail(
-                subject="Hello",
-                sender="sender@example.com",
-                recipients="receiver@example.com",
-                date="2026-06-27",
-                plain_body="Body",
-                html_body='<html><body><p>Body</p><img src="https://example.com/logo.png"></body></html>',
-                source_path=Path("sample.eml"),
-            )
-        )
-
-        window._translate_body(
-            window._body_widget.source_text_for_translation(),
-            "pl",
-            window._body_widget.source_format_for_translation(),
-        )
-        self._wait_for_translation(window)
-
-        self.assertEqual(fake_translation.calls[0][0], "html")
-        self.assertIn("data:image/gif", fake_translation.calls[0][1])
-        self.assertEqual(window._body_widget._last_translation_format, "html")
-        self.assertIn("Translated", window._body_widget._last_translation_result)
-
-    def test_translation_failure_reenables_button_for_retry(self) -> None:
-        fake_translation = FakeTranslationService(RuntimeError("network down"))
-        window = self._window(
-            UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None),
-            translation_service=fake_translation,
-        )
-        window._translation_privacy_confirmed = True
-        window._display_email(
-            ParsedEmail(
-                subject="Hello",
-                sender="sender@example.com",
-                recipients="receiver@example.com",
-                date="2026-06-27",
-                plain_body="Body",
-                html_body="",
-                source_path=Path("sample.eml"),
-            )
-        )
-        errors: list[tuple[str, str]] = []
-        original_show_error = dialogs.show_error
-        dialogs.show_error = lambda parent, title, message: errors.append((title, message))
-        self.addCleanup(lambda: setattr(dialogs, "show_error", original_show_error))
-
-        window._translate_body("Body", "ko")
-        self._wait_for_translation(window)
-
-        self.assertTrue(window._body_widget._translate_button.isEnabled())
-        self.assertEqual(fake_translation.calls, [("text", "Body", "ko")])
-        self.assertTrue(errors)
-        self.assertIn("try again", errors[0][1])
-
-    def _wait_for_translation(self, window: MainWindow) -> None:
-        thread = window._translation_thread
-        if thread is None:
-            return
-        for _ in range(100):
-            if not thread.isRunning():
-                break
-            thread.wait(20)
-            QApplication.processEvents()
-        QApplication.processEvents()
+            window._print_action.trigger()
+            mock_print_content.assert_called_once()
 
 
 if __name__ == "__main__":
     unittest.main()
+

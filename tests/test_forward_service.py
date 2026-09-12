@@ -40,7 +40,7 @@ class ForwardServiceTest(unittest.TestCase):
     def test_forward_email_sends_original_eml_as_attachment(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             source_path = Path(temp_dir) / "original.eml"
-            source_path.write_bytes(b"From: sender@example.com\n\nBody")
+            source_path.write_bytes(b"From: sender@example.com\nSubject: Inner subject\n\nBody")
             email = ParsedEmail(
                 subject="Hello",
                 sender="sender@example.com",
@@ -65,6 +65,43 @@ class ForwardServiceTest(unittest.TestCase):
             self.assertEqual(message["To"], "target@example.com")
             self.assertEqual(message["Subject"], "Fwd: Hello")
             self.assertTrue(message.is_multipart())
+
+            serialized = BytesParser(policy=policy.default).parsebytes(message.as_bytes())
+            attached = next(part for part in serialized.walk() if part.get_content_type() == "message/rfc822")
+            self.assertEqual(attached.get_filename(), "original.eml")
+            self.assertNotEqual(attached.get("Content-Transfer-Encoding", "").lower(), "base64")
+            inner = attached.get_content()
+            if isinstance(inner, list):
+                inner = inner[0]
+            self.assertEqual(inner["Subject"], "Inner subject")
+
+    def test_forward_email_attaches_msg_source_as_outlook_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir) / "original.msg"
+            msg_bytes = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1fake-ole-payload"
+            source_path.write_bytes(msg_bytes)
+            email = ParsedEmail(
+                subject="Msg mail",
+                sender="sender@example.com",
+                recipients="receiver@example.com",
+                date="2026-06-27",
+                plain_body="Body",
+                html_body="",
+                source_path=source_path,
+            )
+            settings = AppSettings(
+                smtp_host="smtp.example.com",
+                smtp_port=2525,
+                smtp_sender="forwarder@example.com",
+            )
+
+            ForwardService(FakeSmtp).forward_email(email, settings, "target@example.com")
+
+            message = FakeSmtp.sent_messages[0]
+            serialized = BytesParser(policy=policy.default).parsebytes(message.as_bytes())
+            attached = next(part for part in serialized.walk() if part.get_filename() == "original.msg")
+            self.assertEqual(attached.get_content_type(), "application/vnd.ms-outlook")
+            self.assertEqual(attached.get_content(), msg_bytes)
 
     def test_forward_email_requires_smtp_settings(self) -> None:
         email = ParsedEmail(

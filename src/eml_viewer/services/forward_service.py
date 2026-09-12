@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import smtplib
+from email import message_from_bytes, policy
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -42,12 +43,7 @@ class ForwardService:
         message["Subject"] = self._forward_subject(email.subject)
         message.set_content(self._plain_forward_body(email))
         self._add_html_body(message, email)
-        message.add_attachment(
-            original_bytes,
-            maintype="message",
-            subtype="rfc822",
-            filename=source_path.name,
-        )
+        self._attach_original(message, original_bytes, source_path)
 
         try:
             with self._smtp_factory(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:
@@ -55,6 +51,33 @@ class ForwardService:
         except Exception as exc:
             raise ForwardSendError(tr("forward.error.send", error=exc)) from exc
         return recipient
+
+    def _attach_original(self, message: EmailMessage, original_bytes: bytes, source_path: Path) -> None:
+        if source_path.suffix.lower() == ".msg":
+            message.add_attachment(
+                original_bytes,
+                maintype="application",
+                subtype="vnd.ms-outlook",
+                filename=source_path.name,
+            )
+            return
+
+        try:
+            original = message_from_bytes(original_bytes, policy=policy.default)
+            probe = EmailMessage()
+            probe.add_attachment(original, filename=source_path.name)
+            probe.as_bytes()
+        except Exception:
+            # A malformed original may not survive re-serialization as a nested
+            # message/rfc822 part; deliver the raw bytes as a plain file instead.
+            message.add_attachment(
+                original_bytes,
+                maintype="application",
+                subtype="octet-stream",
+                filename=source_path.name,
+            )
+            return
+        message.add_attachment(original, filename=source_path.name)
 
     def _validate_settings(self, settings: AppSettings, recipient: str) -> None:
         missing: list[str] = []

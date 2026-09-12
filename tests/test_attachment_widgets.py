@@ -35,7 +35,7 @@ class AttachmentPanelTest(unittest.TestCase):
         self.assertTrue(panel.isHidden())
         self.assertTrue(panel._table.isHidden())
 
-    def test_panel_defaults_to_collapsed_summary_when_attachments_exist(self) -> None:
+    def test_panel_defaults_to_expanded_when_attachments_exist(self) -> None:
         panel = AttachmentPanel()
         attachments = [
             AttachmentInfo(index=1, filename="a.txt", content_type="text/plain", size=1024),
@@ -45,12 +45,12 @@ class AttachmentPanelTest(unittest.TestCase):
         panel.set_attachments(attachments)
 
         self.assertFalse(panel.isHidden())
-        self.assertTrue(panel._table.isHidden())
-        self.assertEqual(panel._toggle_button.text(), "Expand")
+        self.assertFalse(panel._table.isHidden())
+        self.assertEqual(panel._toggle_button.text(), "Collapse")
         self.assertEqual(panel._title_label.text(), "Attachments 2 · 3.0 KB · Selected 0")
-        self.assertLessEqual(panel.maximumHeight(), 48)
+        self.assertGreater(panel.maximumHeight(), 48)
 
-    def test_toggle_expands_list_and_caps_height(self) -> None:
+    def test_toggle_collapses_and_expands_list(self) -> None:
         panel = AttachmentPanel()
         attachments = [
             AttachmentInfo(index=index, filename=f"{index}.txt", content_type="text/plain", size=1)
@@ -58,15 +58,21 @@ class AttachmentPanelTest(unittest.TestCase):
         ]
 
         panel.set_attachments(attachments)
-        collapsed_height = panel.maximumHeight()
-        panel._toggle_button.click()
+        expanded_height = panel.maximumHeight()
 
+        # 기본 펼침 상태에서 토글 클릭 -> 접힘
+        panel._toggle_button.click()
+        self.assertTrue(panel._table.isHidden())
+        self.assertEqual(panel._toggle_button.text(), "Expand")
+        self.assertLessEqual(panel.maximumHeight(), 48)
+
+        # 다시 클릭 -> 펼침
+        panel._toggle_button.click()
         self.assertFalse(panel._table.isHidden())
         self.assertEqual(panel._toggle_button.text(), "Collapse")
-        self.assertGreater(panel.maximumHeight(), collapsed_height)
-        self.assertLessEqual(panel.maximumHeight(), 42 + 34 + (6 * 30))
+        self.assertEqual(panel.maximumHeight(), expanded_height)
 
-    def test_checked_rows_drive_selection_and_button_state(self) -> None:
+    def test_checked_rows_drive_selection_and_button_states(self) -> None:
         panel = AttachmentPanel()
         attachments = [
             AttachmentInfo(index=1, filename="a.txt", content_type="text/plain", size=1),
@@ -74,14 +80,40 @@ class AttachmentPanelTest(unittest.TestCase):
         ]
 
         panel.set_attachments(attachments)
-        panel._toggle_button.click()
         self.assertFalse(panel._save_button.isEnabled())
+        self.assertFalse(panel._open_button.isEnabled())
 
         panel._table.item(0, 0).setCheckState(Qt.CheckState.Checked)
 
         self.assertEqual(panel.selected_attachments(), [attachments[0]])
         self.assertTrue(panel._save_button.isEnabled())
+        self.assertTrue(panel._open_button.isEnabled())
         self.assertEqual(panel._title_label.text(), "Attachments 2 · 2 B · Selected 1")
+
+    def test_open_button_and_double_click_emit_open_requested(self) -> None:
+        panel = AttachmentPanel()
+        attachments = [
+            AttachmentInfo(index=1, filename="a.txt", content_type="text/plain", size=1),
+        ]
+        panel.set_attachments(attachments)
+
+        received = []
+        panel.open_requested.connect(received.append)
+
+        # 1) 체크 후 열기 버튼 클릭
+        panel._table.item(0, 0).setCheckState(Qt.CheckState.Checked)
+        panel._open_button.click()
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0], [attachments[0]])
+
+        # 2) 체크박스 열(0번) 더블클릭은 무시되어야 함
+        panel._table.cellDoubleClicked.emit(0, 0)
+        self.assertEqual(len(received), 1)
+
+        # 3) 파일명 열(1번) 셀 더블클릭 -> 열기 발생
+        panel._table.cellDoubleClicked.emit(0, 1)
+        self.assertEqual(len(received), 2)
+        self.assertEqual(received[1], [attachments[0]])
 
 
 if __name__ == "__main__":
