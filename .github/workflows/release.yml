@@ -47,7 +47,10 @@ jobs:
           $Version = python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
           "version=$Version" >> $env:GITHUB_OUTPUT
 
-      - name: Publish GitHub release
+      # Releases are signed and published locally by the developer using scripts/build_installer.ps1 and gh CLI.
+      # Disabled in CI to prevent unsigned binaries from overwriting official signed releases.
+      - name: Publish GitHub release (Disabled for signed releases)
+        if: false
         uses: softprops/action-gh-release@v2
         with:
           name: EML Viewer ${{ steps.version.outputs.version }}
