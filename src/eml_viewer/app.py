@@ -67,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         print(tr("app.pyside_missing"), file=sys.stderr)
         return 1
 
-    from eml_viewer.gui.main_window import MainWindow
+    from eml_viewer.gui.window_manager import WindowManager
     from eml_viewer.gui.i18n import set_language
     from eml_viewer.gui.theme import apply_theme
     from eml_viewer.services.attachment_service import AttachmentService
@@ -92,21 +92,21 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = EmlParser()
     file_operation_service = FileOperationService()
-    window = MainWindow(
+    window_manager = WindowManager(
         parser=parser,
-        attachment_service=AttachmentService(parser, file_operation_service),
         settings_service=settings_service,
         file_operation_service=file_operation_service,
+        attachment_service=AttachmentService(parser, file_operation_service),
         forward_service=ForwardService(),
         update_service=UpdateService(),
     )
-    if not app.windowIcon().isNull():
-        window.setWindowIcon(app.windowIcon())
-    window.show()
 
+    initial_file = None
     if len(argv) > 1:
         initial_path = Path(argv[1])
         if initial_path.suffix.lower() in {".eml", ".msg"}:
-            window.load_email(initial_path)
+            initial_file = initial_path
+
+    window_manager.create_window(file_path=initial_file)
 
     return app.exec()

@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import atexit
+import os
+import re
+import shutil
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 
@@ -35,8 +40,14 @@ from eml_viewer.services.error_service import ErrorService
 from eml_viewer.services.file_operation_service import FileOperationService
 from eml_viewer.services.forward_service import ForwardConfigError, ForwardService
 from eml_viewer.services.settings_service import SettingsService
-from eml_viewer.services.translation_service import TranslationCanceled, TranslationService
 from eml_viewer.services.update_service import UpdateCheckError, UpdateCheckResult, UpdateService
+
+DANGEROUS_EXTENSIONS: set[str] = {
+    ".exe", ".bat", ".cmd", ".com", ".msi", ".scr", ".js",
+    ".vbs", ".wsf", ".ps1", ".reg", ".lnk", ".jar", ".pif",
+    ".hta", ".msc", ".cpl", ".msp", ".gadget", ".url", ".chm",
+    ".docm", ".xlsm", ".pptm", ".iso", ".img",
+}
 
 
 class DownloadThread(QThread):
@@ -87,52 +98,6 @@ class UpdateCheckThread(QThread):
             self.failed.emit(str(exc))
 
 
-class TranslationThread(QThread):
-    progress = Signal(int, int)
-    finished = Signal(str, str)
-    failed = Signal(str)
-    canceled = Signal()
-
-    def __init__(self, service: TranslationService, text: str, target_language: str, source_format: str) -> None:
-        super().__init__()
-        self._service = service
-        self._text = text
-        self._target_language = target_language
-        self._source_format = source_format
-        import threading
-        self._cancel_event = threading.Event()
-
-    def cancel(self) -> None:
-        self._cancel_event.set()
-
-    def run(self) -> None:
-        try:
-            if self._source_format == "html":
-                translated = self._service.translate_html_text(
-                    self._text,
-                    self._target_language,
-                    progress_callback=self._progress_callback,
-                    cancel_event=self._cancel_event,
-                )
-            else:
-                translated = self._service.translate_text(
-                    self._text,
-                    self._target_language,
-                    progress_callback=self._progress_callback,
-                    cancel_event=self._cancel_event,
-                )
-        except TranslationCanceled:
-            self.canceled.emit()
-            return
-        except Exception as exc:
-            self.failed.emit(str(exc))
-            return
-        self.finished.emit(translated, self._source_format)
-
-    def _progress_callback(self, done: int, total: int) -> None:
-        self.progress.emit(done, total)
-
-
 class MainWindow(QMainWindow):
     """EML Viewer의 메인 화면입니다."""
 
@@ -144,7 +109,8 @@ class MainWindow(QMainWindow):
         file_operation_service: FileOperationService,
         forward_service: ForwardService | None = None,
         update_service: UpdateService | None = None,
-        translation_service: TranslationService | None = None,
+        window_manager: object | None = None,
+        auto_check_update: bool = True,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -154,14 +120,16 @@ class MainWindow(QMainWindow):
         self._file_operation_service = file_operation_service
         self._forward_service = forward_service or ForwardService()
         self._update_service = update_service or UpdateService()
-        self._translation_service = translation_service or TranslationService()
+        self._window_manager = window_manager
+        self._child_windows: list[MainWindow] = []
         self._current_email: ParsedEmail | None = None
         self._download_thread: DownloadThread | None = None
         self._update_check_thread: UpdateCheckThread | None = None
-        self._translation_thread: TranslationThread | None = None
-        self._translation_progress_dialog: QProgressDialog | None = None
-        self._translation_privacy_confirmed = False
         self._available_update_result: UpdateCheckResult | None = None
+        self._session_temp_dir = Path(tempfile.mkdtemp(prefix="eml_temp_"))
+        temp_dir_str = str(self._session_temp_dir)
+        self._cleanup_session_callback = lambda: shutil.rmtree(temp_dir_str, ignore_errors=True)
+        atexit.register(self._cleanup_session_callback)
 
         copied_tooltip = tr("copy.feedback")
         self._subject_edit = CopyableLineEdit(tr("copy.subject"), copied_tooltip, self)
@@ -184,16 +152,22 @@ class MainWindow(QMainWindow):
         )
 
         self._attachment_panel.save_requested.connect(self._save_attachments)
+        self._attachment_panel.open_requested.connect(self._open_attachments)
         self._subject_edit.copy_requested.connect(self._copy_to_clipboard)
         self._sender_edit.copy_requested.connect(self._copy_to_clipboard)
         self._to_edit.copy_requested.connect(self._copy_to_clipboard)
         self._cc_edit.copy_requested.connect(self._copy_to_clipboard)
         self._date_edit.copy_requested.connect(self._copy_to_clipboard)
         self._forward_button.clicked.connect(self._forward_current_email)
-        self._body_widget.translate_requested.connect(self._translate_body)
-        self._start_background_update_check()
+        self._body_widget.open_in_browser_requested.connect(self._open_in_browser)
+        if auto_check_update:
+            self._start_background_update_check()
 
     def _build_actions(self) -> None:
+        self._new_window_action = QAction(self)
+        self._new_window_action.setShortcut("Ctrl+N")
+        self._new_window_action.triggered.connect(self._open_new_window)
+
         self._open_action = QAction(self)
         self._open_action.setShortcut("Ctrl+O")
         self._open_action.triggered.connect(self._open_file)
@@ -202,14 +176,43 @@ class MainWindow(QMainWindow):
         self._exit_action.setShortcut("Alt+F4")
         self._exit_action.triggered.connect(self.close)
 
+        self._open_browser_action = QAction(self)
+        self._open_browser_action.setShortcut("Ctrl+B")
+        self._open_browser_action.triggered.connect(self._open_in_browser)
+
+        self._print_action = QAction(self)
+        self._print_action.setShortcut("Ctrl+P")
+        self._print_action.triggered.connect(self._print_current_message)
+
         self._settings_action = QAction(self)
         self._settings_action.triggered.connect(self._open_settings)
 
+        self._find_action = QAction(self)
+        self._find_action.setShortcut("Ctrl+F")
+        self._find_action.triggered.connect(self._body_widget.show_search_bar)
+
+        self._find_next_action = QAction(self)
+        self._find_next_action.setShortcut("F3")
+        self._find_next_action.triggered.connect(self._body_widget.find_next)
+
+        self._find_prev_action = QAction(self)
+        self._find_prev_action.setShortcut("Shift+F3")
+        self._find_prev_action.triggered.connect(self._body_widget.find_previous)
+
         self._file_menu = self.menuBar().addMenu("")
+        self._file_menu.addAction(self._new_window_action)
         self._file_menu.addAction(self._open_action)
+        self._file_menu.addAction(self._open_browser_action)
+        self._file_menu.addAction(self._print_action)
+        self._file_menu.addSeparator()
         self._file_menu.addAction(self._settings_action)
         self._file_menu.addSeparator()
         self._file_menu.addAction(self._exit_action)
+
+        self._edit_menu = self.menuBar().addMenu("")
+        self._edit_menu.addAction(self._find_action)
+        self._edit_menu.addAction(self._find_next_action)
+        self._edit_menu.addAction(self._find_prev_action)
 
         self._update_action = QAction(self)
         self._update_action.triggered.connect(self._check_for_updates)
@@ -219,7 +222,10 @@ class MainWindow(QMainWindow):
 
         self._toolbar = self.addToolBar("")
         self._toolbar.setMovable(False)
+        self._toolbar.addAction(self._new_window_action)
         self._toolbar.addAction(self._open_action)
+        self._toolbar.addAction(self._open_browser_action)
+        self._toolbar.addAction(self._print_action)
 
     def _build_ui(self) -> None:
         self._open_button = QPushButton(self)
@@ -271,16 +277,32 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self._metadata_group)
         content_layout.addWidget(splitter, stretch=1)
 
+
         central_widget = QWidget(self)
         central_widget.setLayout(content_layout)
         self.setCentralWidget(central_widget)
 
+    def apply_settings(self, new_settings) -> None:
+        """새 설정을 적용하여 UI 언어, 테마, 이미지 로드 옵션을 갱신합니다."""
+        self.retranslate_ui()
+        self._body_widget.set_remote_images_auto_load(new_settings.auto_load_remote_images)
+
+    def retranslate_ui(self) -> None:
+        self._retranslate_ui()
+
     def _retranslate_ui(self) -> None:
-        self._open_action.setText(tr("menu.open_eml"))
-        self._exit_action.setText(tr("menu.exit"))
+        self._new_window_action.setText(tr("action.new_window"))
+        self._open_action.setText(tr("button.open_eml"))
+        self._open_browser_action.setText(tr("button.open_browser"))
+        self._print_action.setText(tr("action.print"))
         self._settings_action.setText(tr("menu.settings"))
+        self._exit_action.setText(tr("menu.exit"))
+        self._find_action.setText(tr("menu.find"))
+        self._find_next_action.setText(tr("find.next"))
+        self._find_prev_action.setText(tr("find.previous"))
         self._update_action.setText(tr("menu.update_check"))
         self._file_menu.setTitle(tr("menu.file"))
+        self._edit_menu.setTitle(tr("menu.edit"))
         self._help_menu.setTitle(tr("menu.help"))
         self._toolbar.setWindowTitle(tr("toolbar.main"))
         self._open_button.setText(tr("button.open_eml"))
@@ -313,6 +335,16 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(tr("status.select_eml"))
         if self._available_update_result is not None:
             self._set_update_banner_text(self._available_update_result)
+        self._update_window_title()
+
+    def _update_window_title(self) -> None:
+        if self._current_email is not None:
+            raw_subject = self._current_email.subject or ""
+            subject = re.sub(r"[\r\n\t]+", " ", raw_subject).strip()
+            display_subject = subject if subject else tr("app.untitled_subject")
+            self.setWindowTitle(f"{display_subject} - EML Viewer")
+        else:
+            self.setWindowTitle("EML Viewer")
 
     def _open_file(self) -> None:
         path = dialogs.select_eml_file(self)
@@ -327,11 +359,11 @@ class MainWindow(QMainWindow):
             self._show_error(tr("error.open_eml.title"), exc)
             return
 
-        self._current_email = parsed_email
         self._display_email(parsed_email)
         self.statusBar().showMessage(tr("status.file_opened", source_path=parsed_email.source_path))
 
     def _display_email(self, email: ParsedEmail) -> None:
+        self._current_email = email
         self._subject_edit.setText(email.subject)
         self._sender_edit.setText(email.sender)
         self._to_edit.setText(email.recipients)
@@ -341,6 +373,7 @@ class MainWindow(QMainWindow):
         self._forward_button.setEnabled(email.source_path is not None)
         self._body_widget.set_email(email)
         self._attachment_panel.set_attachments(email.attachments)
+        self._update_window_title()
 
     def _copy_to_clipboard(self, text: str) -> None:
         clipboard = QApplication.clipboard()
@@ -348,83 +381,71 @@ class MainWindow(QMainWindow):
             clipboard.setText(text)
             self.statusBar().showMessage(tr("status.copied"))
 
-    def _translate_body(self, text: str, target_language: str, source_format: str = "text") -> None:
-        if self._translation_thread is not None and self._translation_thread.isRunning():
-            return
-        if not text.strip():
+    def _open_in_browser(self) -> None:
+        if self._current_email is None:
             return
 
-        if not self._translation_privacy_confirmed:
-            answer = QMessageBox.question(
-                self,
-                tr("translation.privacy.title"),
-                tr("translation.privacy.body"),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
+        html_content = self._body_widget.current_prepared_html()
+        if not html_content.strip():
+            return
+
+        clean_html = re.sub(
+            r'<meta[^>]+charset=["\']?[^"\'>]+["\']?[^>]*>',
+            '<meta charset="utf-8">',
+            html_content,
+            flags=re.IGNORECASE,
+        )
+        csp_meta = '<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="script-src \'none\';">'
+        if re.search(r"<head>", clean_html, re.IGNORECASE):
+            clean_html = re.sub(r"<head>", f"<head>{csp_meta}", clean_html, count=1, flags=re.IGNORECASE)
+        else:
+            clean_html = f"<head>{csp_meta}</head>{clean_html}"
+
+        preview_file = self._session_temp_dir / "preview.html"
+        try:
+            preview_file.write_text(clean_html, encoding="utf-8")
+            if hasattr(os, "startfile"):
+                os.startfile(str(preview_file))
+            else:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(preview_file)))
+        except Exception as exc:
+            self._show_error(tr("error.open_browser.title"), exc)
+
+    def _open_new_window(self) -> None:
+        if self._window_manager is not None and hasattr(self._window_manager, "create_window"):
+            self._window_manager.create_window()
+        else:
+            win = MainWindow(
+                parser=self._parser,
+                attachment_service=self._attachment_service,
+                settings_service=self._settings_service,
+                file_operation_service=self._file_operation_service,
+                forward_service=self._forward_service,
+                update_service=self._update_service,
+                auto_check_update=False,
             )
-            if answer != QMessageBox.StandardButton.Yes:
-                return
-            self._translation_privacy_confirmed = True
+            self._child_windows.append(win)
+            win.destroyed.connect(lambda: self._child_windows.remove(win) if win in self._child_windows else None)
+            win.show()
 
-        self._body_widget.set_translation_enabled(False)
-        self._translation_progress_dialog = QProgressDialog(
-            tr("translation.progress.starting"),
-            tr("settings.cancel"),
-            0,
-            0,
-            self,
-        )
-        self._translation_progress_dialog.setWindowTitle(tr("translation.progress.title"))
-        self._translation_progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
-        self._translation_progress_dialog.setAutoClose(False)
-        self._translation_progress_dialog.setAutoReset(False)
-
-        self._translation_thread = TranslationThread(self._translation_service, text, target_language, source_format)
-        self._translation_thread.progress.connect(self._on_translation_progress)
-        self._translation_thread.finished.connect(self._on_translation_finished)
-        self._translation_thread.failed.connect(self._on_translation_failed)
-        self._translation_thread.canceled.connect(self._on_translation_canceled)
-        self._translation_progress_dialog.canceled.connect(self._translation_thread.cancel)
-
-        self._translation_progress_dialog.show()
-        self._translation_thread.start()
-        self.statusBar().showMessage(tr("translation.status.running"))
-
-    def _on_translation_progress(self, done: int, total: int) -> None:
-        if self._translation_progress_dialog is None:
+    def _print_current_message(self) -> None:
+        if self._current_email is None:
             return
-        self._translation_progress_dialog.setRange(0, max(1, total))
-        self._translation_progress_dialog.setValue(done)
-        self._translation_progress_dialog.setLabelText(
-            tr("translation.progress.label", done=done, total=total)
-        )
 
-    def _on_translation_finished(self, translated_text: str, source_format: str) -> None:
-        if self._translation_progress_dialog is not None:
-            self._translation_progress_dialog.close()
-            self._translation_progress_dialog = None
-        self._body_widget.set_translation_result(translated_text, source_format)
-        self._body_widget.set_translation_enabled(True)
-        self.statusBar().showMessage(tr("translation.status.done"))
+        try:
+            from PySide6.QtPrintSupport import QPrinter, QPrintDialog
+        except ImportError:
+            return
 
-    def _on_translation_failed(self, error_msg: str) -> None:
-        if self._translation_progress_dialog is not None:
-            self._translation_progress_dialog.close()
-            self._translation_progress_dialog = None
-        self._body_widget.set_translation_enabled(True)
-        dialogs.show_error(
-            self,
-            tr("translation.error.title"),
-            tr("translation.error.body", error=error_msg),
-        )
-        self.statusBar().showMessage(tr("translation.status.failed"))
+        try:
+            printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+            dialog = QPrintDialog(printer, self)
+            if dialog.exec() != QPrintDialog.DialogCode.Accepted:
+                return
 
-    def _on_translation_canceled(self) -> None:
-        if self._translation_progress_dialog is not None:
-            self._translation_progress_dialog.close()
-            self._translation_progress_dialog = None
-        self._body_widget.set_translation_enabled(True)
-        self.statusBar().showMessage(tr("translation.status.canceled"))
+            self._body_widget.print_content(printer)
+        except Exception as exc:
+            self._show_error(tr("print.failed.title"), exc)
 
     def _open_settings(self) -> None:
         settings = self._settings_service.load_settings()
@@ -442,12 +463,14 @@ class MainWindow(QMainWindow):
             smtp_port=dialog.smtp_port,
         )
         language_changed = new_settings.language != settings.language
-        self._settings_service.save_settings(new_settings)
-        from eml_viewer.gui.i18n import set_language
-
-        set_language(new_settings.language)
-        apply_theme(QApplication.instance(), new_settings.theme)
-        self._body_widget.set_remote_images_auto_load(new_settings.auto_load_remote_images)
+        if self._window_manager is not None and hasattr(self._window_manager, "broadcast_settings"):
+            self._window_manager.broadcast_settings(new_settings)
+        else:
+            self._settings_service.save_settings(new_settings)
+            from eml_viewer.gui.i18n import set_language
+            set_language(new_settings.language)
+            apply_theme(QApplication.instance(), new_settings.theme)
+            self.apply_settings(new_settings)
         if language_changed:
             self._retranslate_ui()
             dialogs.show_info(self, tr("settings.title"), tr("settings.language_applied"))
@@ -582,6 +605,52 @@ class MainWindow(QMainWindow):
         )
         self.statusBar().showMessage(tr("attachment.saved_one.status", saved_path=saved_path))
 
+    def _open_attachments(self, attachments: list[AttachmentInfo]) -> None:
+        if self._current_email is None or self._current_email.source_path is None:
+            dialogs.show_error(self, tr("error.attachment_open.title"), tr("forward.error.no_email"))
+            return
+
+        failed_files: list[str] = []
+        for attachment in attachments:
+            safe_filename = self._file_operation_service.sanitize_filename(attachment.filename)
+            ext = Path(safe_filename).suffix.lower()
+            if ext in DANGEROUS_EXTENSIONS:
+                reply = QMessageBox.warning(
+                    self,
+                    tr("dialog.open_dangerous.title"),
+                    tr("dialog.open_dangerous.body", filename=safe_filename),
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    continue
+
+            # 동일 파일명 충돌 방지를 위해 첨부파일 인덱스별 전용 하위 디렉터리 사용
+            attachment_dir = self._session_temp_dir / str(attachment.index)
+            attachment_dir.mkdir(parents=True, exist_ok=True)
+            dest_file = attachment_dir / safe_filename
+
+            try:
+                self._attachment_service.save_attachment(
+                    email_path=self._current_email.source_path,
+                    attachment_index=attachment.index,
+                    destination_path=dest_file,
+                    overwrite=True,
+                )
+                if hasattr(os, "startfile"):
+                    os.startfile(str(dest_file))
+                else:
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(str(dest_file)))
+            except Exception as exc:
+                failed_files.append(f"{attachment.filename}: {exc}")
+
+        if failed_files:
+            dialogs.show_error(
+                self,
+                tr("error.attachment_open.title"),
+                "\n".join(failed_files),
+            )
+
     def _restore_window_geometry(self) -> None:
         settings = self._settings_service.load_settings()
         saved_geometry = QRect(
@@ -624,14 +693,13 @@ class MainWindow(QMainWindow):
         return False
 
     def closeEvent(self, event) -> None:
+        if self._window_manager is not None and hasattr(self._window_manager, "unregister_window"):
+            self._window_manager.unregister_window(self)
         if self._update_check_thread is not None and self._update_check_thread.isRunning():
             self._update_check_thread.wait(1000)
         if self._download_thread is not None and self._download_thread.isRunning():
             self._download_thread.cancel()
             self._download_thread.wait()
-        if self._translation_thread is not None and self._translation_thread.isRunning():
-            self._translation_thread.cancel()
-            self._translation_thread.wait()
         try:
             geometry = self.geometry()
             self._settings_service.save_window_geometry(
@@ -640,6 +708,16 @@ class MainWindow(QMainWindow):
                 width=geometry.width(),
                 height=geometry.height(),
             )
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_cleanup_session_callback"):
+                atexit.unregister(self._cleanup_session_callback)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_session_temp_dir") and self._session_temp_dir.exists():
+                shutil.rmtree(str(self._session_temp_dir), ignore_errors=True)
         except Exception:
             pass
         super().closeEvent(event)
