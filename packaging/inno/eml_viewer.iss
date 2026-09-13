@@ -3,7 +3,7 @@
 #define MyAppExeName "EmlViewer.exe"
 #define MyAppIcon "..\..\assets\app.ico"
 #ifndef MyAppVersion
-#define MyAppVersion "0.1.14"
+#define MyAppVersion "0.1.15"
 #endif
 
 [Setup]
@@ -16,11 +16,15 @@ CloseApplications=yes
 DefaultDirName={localappdata}\Programs\EML Viewer
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-OutputDir=..\..\installer
-OutputBaseFilename=EmlViewerSetup-{#MyAppVersion}
-Compression=lzma
-SolidCompression=yes
+UsePreviousAppDir=no
+UsePreviousGroup=no
 PrivilegesRequired=lowest
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+OutputDir=..\..\installer
+OutputBaseFilename=App07_EmlViewer_Setup_v{#MyAppVersion}
+Compression=lzma2/max
+SolidCompression=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
 SetupIconFile={#MyAppIcon}
 WizardStyle=modern
@@ -48,8 +52,8 @@ Name: "associateeml"; Description: "{cm:AssociateEmlTask}"; GroupDescription: "{
 Source: "..\..\dist\EmlViewer\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{userprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Registry]
 Root: HKCU; Subkey: "Software\Classes\.eml"; ValueType: string; ValueName: ""; ValueData: "EMLViewer.eml"; Flags: uninsdeletevalue; Tasks: associateeml

@@ -49,6 +49,28 @@ class UpdateServiceTest(unittest.TestCase):
         self.assertEqual(result.asset_name, "EmlViewerSetup-0.2.0.exe")
         self.assertEqual(result.asset_size, 12345)
 
+    def test_update_available_uses_app07_installer_asset(self) -> None:
+        payload = {
+            "tag_name": "v0.2.0",
+            "html_url": "https://github.com/KwangBeomPark/eml-viewer/releases/tag/v0.2.0",
+            "assets": [
+                {
+                    "name": "App07_EmlViewer_Setup_v0.2.0.exe",
+                    "browser_download_url": "https://example.com/App07_EmlViewer_Setup_v0.2.0.exe",
+                    "size": 54321,
+                }
+            ],
+        }
+
+        service = UpdateService(current_version="0.1.0", opener=lambda request, timeout: FakeResponse(payload))
+        result = service.check_for_updates()
+
+        self.assertTrue(result.update_available)
+        self.assertEqual(result.latest_version, "0.2.0")
+        self.assertEqual(result.download_url, "https://example.com/App07_EmlViewer_Setup_v0.2.0.exe")
+        self.assertEqual(result.asset_name, "App07_EmlViewer_Setup_v0.2.0.exe")
+        self.assertEqual(result.asset_size, 54321)
+
     def test_same_version_is_latest(self) -> None:
         payload = {
             "tag_name": "v0.1.0",
