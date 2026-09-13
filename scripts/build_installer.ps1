@@ -62,6 +62,32 @@ try {
     }
 
     Write-Host "Installer build and signing complete: $installerPath" -ForegroundColor Green
+
+    # 1. Package installer into ZIP (standard web distribution to prevent browser/SmartScreen raw exe download warnings)
+    $installerZipPath = Join-Path $ProjectRoot "installer\EmlViewerSetup-$Version.zip"
+    if (Test-Path $installerZipPath) { Remove-Item -Force $installerZipPath }
+    Write-Host "Creating installer zip: $installerZipPath..."
+    Compress-Archive -Path $installerPath -DestinationPath $installerZipPath -Force
+
+    # 2. Package portable distribution (no-install zip containing dist\EmlViewer)
+    $portableZipPath = Join-Path $ProjectRoot "installer\EmlViewer-$Version-win64-portable.zip"
+    if (Test-Path $portableZipPath) { Remove-Item -Force $portableZipPath }
+    Write-Host "Creating portable zip: $portableZipPath..."
+    $distDir = Join-Path $ProjectRoot "dist\EmlViewer"
+    Compress-Archive -Path "$distDir\*" -DestinationPath $portableZipPath -Force
+
+    # 3. Generate SHA256SUMS.txt
+    $checksumsPath = Join-Path $ProjectRoot "installer\SHA256SUMS.txt"
+    $artifactsToHash = @($installerPath, $installerZipPath, $portableZipPath)
+    $hashLines = foreach ($file in $artifactsToHash) {
+        if (Test-Path $file) {
+            $hash = (Get-FileHash -Path $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            $fileName = Split-Path -Leaf $file
+            "$hash  $fileName"
+        }
+    }
+    $hashLines | Out-File -FilePath $checksumsPath -Encoding utf8
+    Write-Host "SHA256 checksums generated at $checksumsPath" -ForegroundColor Cyan
 }
 finally {
     Pop-Location
