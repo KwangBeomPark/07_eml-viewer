@@ -21,6 +21,7 @@ class ParsedEmail:
     source_path: Path | None = None
     plain_body_generated: bool = False
     cc: str = ""
+    raw_headers: str = ""
 
     @property
     def has_html(self) -> bool:

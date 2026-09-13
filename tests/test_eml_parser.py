@@ -376,6 +376,35 @@ class EmlParserTest(unittest.TestCase):
 
             self.assertEqual(parsed.plain_body.strip(), "this is the longer real body")
 
+    def test_unknown_charset_fallback_does_not_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "invalid_charset.eml"
+            path.write_bytes(
+                (
+                    "MIME-Version: 1.0\n"
+                    "Subject: Unknown Charset\n"
+                    "From: sender@example.com\n"
+                    "To: receiver@example.com\n"
+                    "Content-Type: text/plain; charset=\"x-nonexistent-charset-123\"\n"
+                    "\n"
+                    "Fallback payload text: \ud55c\uae00 \ubcf8\ubb38\n"
+                ).encode("utf-8")
+            )
+
+            parsed = EmlParser().parse_file(path)
+            self.assertIn("Fallback payload text", parsed.plain_body)
+            self.assertIn("Subject: Unknown Charset", parsed.raw_headers)
+
+    def test_safe_decode_direct(self) -> None:
+        from eml_viewer.services.eml_parser import _safe_decode
+
+        # 정상 utf-8
+        self.assertEqual(_safe_decode("테스트".encode("utf-8"), "utf-8"), "테스트")
+        # 비정상 charset 이름이지만 utf-8 바이트인 경우
+        self.assertEqual(_safe_decode("테스트".encode("utf-8"), "invalid_codec_xyz"), "테스트")
+        # cp949 인코딩 바이트이고 charset이 비정상인 경우
+        self.assertEqual(_safe_decode("한글".encode("cp949"), "invalid_codec_xyz"), "한글")
+
     def _patch_oxmsg_load(self, message: FakeMsg):
         from oxmsg import Message as OxMsgMessage
 

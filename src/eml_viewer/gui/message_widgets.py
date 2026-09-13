@@ -113,6 +113,16 @@ else:
     ZoomWebEngineView = None
     MailWebEnginePage = None
     RemoteContentInterceptor = None
+_SHARED_WEB_PROFILE: QWebEngineProfile | None = None
+
+
+def _get_shared_web_profile() -> QWebEngineProfile | None:
+    global _SHARED_WEB_PROFILE
+    if _SHARED_WEB_PROFILE is None and QWebEngineProfile is not None:
+        from PySide6.QtCore import QCoreApplication
+        app = QCoreApplication.instance()
+        _SHARED_WEB_PROFILE = QWebEngineProfile(app) if app is not None else QWebEngineProfile()
+    return _SHARED_WEB_PROFILE
 
 
 class MessageBodyWidget(QWidget):
@@ -179,8 +189,17 @@ class MessageBodyWidget(QWidget):
         self._open_browser_button.clicked.connect(lambda: self.open_in_browser_requested.emit())
 
         reset_shortcut = QShortcut(QKeySequence("Ctrl+0"), self)
+        reset_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         reset_shortcut.activated.connect(self.reset_zoom)
         self._reset_zoom_shortcut = reset_shortcut
+
+        for seq in (QKeySequence.StandardKey.ZoomIn, QKeySequence("Ctrl+=")):
+            sc = QShortcut(seq, self)
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            sc.activated.connect(lambda: self._change_zoom_by_steps(1))
+        sc_out = QShortcut(QKeySequence.StandardKey.ZoomOut, self)
+        sc_out.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_out.activated.connect(lambda: self._change_zoom_by_steps(-1))
 
         for button in (self._zoom_out_button, self._zoom_in_button, self._zoom_reset_button):
             button.setFixedWidth(52)
@@ -366,31 +385,46 @@ class MessageBodyWidget(QWidget):
         else:
             self.show_search_bar()
 
-    def print_content(self, printer: object) -> None:
+    def print_content(self, printer: object, on_finished: object | None = None) -> None:
         """현재 활성화된 탭의 본문을 인쇄합니다."""
         self._active_printer = printer
         is_plain = self._tabs.currentIndex() == 0 or isinstance(self._html_view, ZoomTextBrowser)
         if is_plain:
-            browser = (
-                self._plain_browser
-                if self._tabs.currentIndex() == 0
-                else self._html_view
-            )
-            browser.document().print_(printer)
-            self._active_printer = None
+            try:
+                browser = (
+                    self._plain_browser
+                    if self._tabs.currentIndex() == 0
+                    else self._html_view
+                )
+                browser.document().print_(printer)
+                self._active_printer = None
+                if callable(on_finished):
+                    on_finished(True)
+            except Exception:
+                self._active_printer = None
+                if callable(on_finished):
+                    on_finished(False)
         else:
             if QWebEngineView is not None and isinstance(self._html_view, QWebEngineView):
                 view = self._html_view
                 print_func = getattr(view, "print_", None) or getattr(view, "print", None)
+
+                def _on_finish(ok: bool) -> None:
+                    self._active_printer = None
+                    if callable(on_finished):
+                        on_finished(ok)
+
                 if hasattr(view, "printFinished"):
-                    def _on_finish(ok: bool) -> None:
-                        self._active_printer = None
                     view.printFinished.connect(_on_finish, Qt.ConnectionType.SingleShotConnection)
 
                 if print_func is not None:
                     print_func(printer)
                 elif hasattr(view, "page"):
-                    view.page().print(printer, lambda ok: setattr(self, "_active_printer", None))
+                    view.page().print(printer, _on_finish)
+            else:
+                self._active_printer = None
+                if callable(on_finished):
+                    on_finished(False)
 
     def _handle_search(self, text: str, forward: bool, case_sensitive: bool) -> None:
         is_plain = self._tabs.currentIndex() == 0 or isinstance(self._html_view, ZoomTextBrowser)
@@ -500,11 +534,11 @@ class MessageBodyWidget(QWidget):
             return fallback
 
         view = ZoomWebEngineView(self)
-        profile = QWebEngineProfile(view)
+        profile = _get_shared_web_profile() or QWebEngineProfile(view)
+        page = MailWebEnginePage(profile, view)
         interceptor = RemoteContentInterceptor(view)
         self._remote_content_interceptors.append(interceptor)
-        profile.setUrlRequestInterceptor(interceptor)
-        page = MailWebEnginePage(profile, view)
+        page.setUrlRequestInterceptor(interceptor)
         settings = page.settings()
         settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, False)
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)

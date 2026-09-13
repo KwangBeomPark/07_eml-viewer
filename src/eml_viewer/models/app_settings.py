@@ -18,6 +18,7 @@ class AppSettings:
     smtp_sender: str = ""
     smtp_port: int = 25
     recent_recipients: tuple[str, ...] = ()
+    recent_files: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, data: dict) -> "AppSettings":
@@ -43,6 +44,7 @@ class AppSettings:
             smtp_sender=str(data.get("smtp_sender", cls.smtp_sender)).strip(),
             smtp_port=cls._safe_port(data.get("smtp_port", cls.smtp_port)),
             recent_recipients=cls._safe_recent_recipients(data.get("recent_recipients", ())),
+            recent_files=cls._safe_recent_files(data.get("recent_files", ())),
         )
 
     def to_dict(self) -> dict[str, bool | int | str | list[str]]:
@@ -58,6 +60,7 @@ class AppSettings:
             "smtp_sender": self.smtp_sender,
             "smtp_port": self.smtp_port,
             "recent_recipients": list(self.recent_recipients),
+            "recent_files": list(self.recent_files),
         }
 
     @staticmethod
@@ -93,3 +96,21 @@ class AppSettings:
             if len(recipients) == 10:
                 break
         return tuple(recipients)
+
+    @staticmethod
+    def _safe_recent_files(value: object) -> tuple[str, ...]:
+        if not isinstance(value, (list, tuple)):
+            return ()
+
+        files: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            file_path = str(item).strip()
+            key = file_path.casefold()
+            if not file_path or key in seen:
+                continue
+            seen.add(key)
+            files.append(file_path)
+            if len(files) == 10:
+                break
+        return tuple(files)

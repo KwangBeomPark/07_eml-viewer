@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,7 +52,13 @@ class FileOperationService:
             will_overwrite=destination.exists(),
         )
 
-    def write_bytes(self, destination_path: str | Path, data: bytes, overwrite: bool = False) -> Path:
+    def write_bytes(
+        self,
+        destination_path: str | Path,
+        data: bytes,
+        overwrite: bool = False,
+        apply_motw: bool = True,
+    ) -> Path:
         destination = Path(destination_path)
         if destination.exists() and destination.is_dir():
             raise IsADirectoryError(tr("file_operation.write_to_directory", destination=destination))
@@ -70,6 +77,9 @@ class FileOperationService:
             temp_path.unlink(missing_ok=True)
             raise
 
+        if apply_motw:
+            self.apply_mark_of_the_web(destination)
+
         return destination
 
     def sanitize_filename(self, filename: str, fallback: str = "attachment") -> str:
@@ -83,3 +93,23 @@ class FileOperationService:
             cleaned = f"{cleaned_path.stem}_{cleaned_path.suffix}" if cleaned_path.suffix else f"{cleaned}_"
 
         return cleaned
+
+    @staticmethod
+    def apply_mark_of_the_web(path: Path | str, zone_id: int = 3) -> bool:
+        """Windows NTFS Alternate Data Stream에 Mark-of-the-Web (Zone.Identifier)을 부착합니다.
+
+        ZoneId 3 = Internet (SmartScreen 및 Office Protected View 발동)
+        비-NTFS 볼륨이거나 OS 지원 불가 시 조용히 무시합니다.
+        """
+        if sys.platform != "win32":
+            return False
+        try:
+            target = Path(path)
+            if not target.exists():
+                return False
+            ads_path = f"{target}:Zone.Identifier"
+            with open(ads_path, "w", encoding="ascii") as f:
+                f.write(f"[ZoneTransfer]\r\nZoneId={zone_id}\r\n")
+            return True
+        except (OSError, ValueError):
+            return False

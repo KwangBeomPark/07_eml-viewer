@@ -43,12 +43,14 @@ class AttachmentService:
         attachment_index: int,
         destination_path: str | Path,
         overwrite: bool = False,
+        apply_motw: bool = True,
     ) -> Path:
         extracted = self._parser.extract_attachment(email_path, attachment_index)
         return self._file_operation_service.write_bytes(
             destination_path=destination_path,
             data=extracted.payload,
             overwrite=overwrite,
+            apply_motw=apply_motw,
         )
 
     def create_bulk_save_preview(

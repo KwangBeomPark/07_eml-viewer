@@ -101,6 +101,25 @@ class SettingsServiceTest(unittest.TestCase):
 
             self.assertEqual(service.load_settings().recent_recipients, tuple(recipients[:10]))
 
+    def test_add_recent_file_keeps_newest_ten_unique_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = SettingsService(Path(temp_dir) / "settings.json")
+            files = [str(Path(temp_dir) / f"mail_{i}.eml") for i in range(15)]
+
+            for f in files:
+                service.add_recent_file(f)
+
+            recent = service.load_settings().recent_files
+            self.assertEqual(len(recent), 10)
+            # 가장 최근에 추가된 항목이 맨 앞이어야 함
+            self.assertEqual(recent[0], files[-1])
+
+            # 중복 추가 시 맨 앞으로 이동하고 개수는 유지
+            service.add_recent_file(files[10])
+            recent_updated = service.load_settings().recent_files
+            self.assertEqual(len(recent_updated), 10)
+            self.assertEqual(recent_updated[0], files[10])
+
 
 if __name__ == "__main__":
     unittest.main()

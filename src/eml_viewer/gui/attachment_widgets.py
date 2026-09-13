@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -29,6 +30,7 @@ class AttachmentPanel(QWidget):
         self._title_label = QLabel(self)
         self._toggle_button = QPushButton(self)
         self._table = QTableWidget(0, 4, self)
+        self._select_all_button = QPushButton(self)
         self._open_button = QPushButton(self)
         self._save_button = QPushButton(self)
 
@@ -40,6 +42,8 @@ class AttachmentPanel(QWidget):
         self._table.verticalHeader().setVisible(False)
 
         self._toggle_button.clicked.connect(self._toggle_expanded)
+        self._select_all_button.setEnabled(False)
+        self._select_all_button.clicked.connect(self._toggle_select_all)
         self._open_button.setEnabled(False)
         self._open_button.clicked.connect(self._emit_open_requested)
         self._save_button.setEnabled(False)
@@ -47,10 +51,15 @@ class AttachmentPanel(QWidget):
         self._table.itemChanged.connect(self._update_button_state)
         self._table.cellDoubleClicked.connect(self._on_cell_double_clicked)
 
+        self._select_all_shortcut = QShortcut(QKeySequence("Ctrl+A"), self)
+        self._select_all_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._select_all_shortcut.activated.connect(self._toggle_select_all)
+
         header_layout = QHBoxLayout()
         header_layout.addWidget(self._title_label)
         header_layout.addStretch(1)
         header_layout.addWidget(self._toggle_button)
+        header_layout.addWidget(self._select_all_button)
         header_layout.addWidget(self._open_button)
         header_layout.addWidget(self._save_button)
 
@@ -63,6 +72,7 @@ class AttachmentPanel(QWidget):
         self._table.setHorizontalHeaderLabels(
             ["", tr("attachment.table.filename"), tr("attachment.table.kind"), tr("attachment.table.size")]
         )
+        self._select_all_button.setText(tr("button.select_all"))
         self._open_button.setText(tr("button.open_selected"))
         self._save_button.setText(tr("button.save_selected"))
         self._update_summary()
@@ -120,6 +130,12 @@ class AttachmentPanel(QWidget):
         has_selection = self._expanded and bool(self.selected_attachments())
         self._save_button.setEnabled(has_selection)
         self._open_button.setEnabled(has_selection)
+        self._select_all_button.setEnabled(self._expanded and bool(self._attachments))
+        all_checked = all(
+            self._table.item(row, 0) is not None and self._table.item(row, 0).checkState() == Qt.CheckState.Checked
+            for row in range(len(self._attachments))
+        ) if self._attachments else False
+        self._select_all_button.setText(tr("button.deselect_all") if all_checked else tr("button.select_all"))
 
     def _emit_save_requested(self) -> None:
         attachments = self.selected_attachments()
@@ -140,6 +156,22 @@ class AttachmentPanel(QWidget):
         self._apply_expanded_state()
         self._update_button_state()
 
+    def _toggle_select_all(self) -> None:
+        if not self._attachments or not self._expanded:
+            return
+        all_checked = all(
+            self._table.item(row, 0) is not None and self._table.item(row, 0).checkState() == Qt.CheckState.Checked
+            for row in range(len(self._attachments))
+        )
+        new_state = Qt.CheckState.Unchecked if all_checked else Qt.CheckState.Checked
+        self._table.blockSignals(True)
+        for row in range(len(self._attachments)):
+            item = self._table.item(row, 0)
+            if item is not None:
+                item.setCheckState(new_state)
+        self._table.blockSignals(False)
+        self._update_button_state()
+
     def _update_summary(self) -> None:
         count = len(self._attachments)
         selected_count = len(self.selected_attachments()) if count else 0
@@ -152,6 +184,7 @@ class AttachmentPanel(QWidget):
         has_attachments = bool(self._attachments)
         self.setVisible(has_attachments)
         self._table.setVisible(has_attachments and self._expanded)
+        self._select_all_button.setVisible(has_attachments and self._expanded)
         self._open_button.setVisible(has_attachments and self._expanded)
         self._save_button.setVisible(has_attachments and self._expanded)
         self._toggle_button.setVisible(has_attachments)

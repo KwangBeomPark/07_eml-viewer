@@ -72,7 +72,8 @@ class _HtmlPlainTextExtractor(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
         if self._skip_stack:
-            self._skip_stack.pop()
+            if self._skip_stack[-1] == tag:
+                self._skip_stack.pop()
             return
         if tag in self._block_tags or tag in self._row_tags:
             self._newline()
@@ -131,6 +132,31 @@ class _HtmlResourceReferenceExtractor(HTMLParser):
             elif name == "style":
                 for match in self._url_pattern.finditer(value):
                     self.references.update(_resource_keys(match.group("value")))
+
+
+def _safe_decode(payload: bytes, charset: str | None) -> str:
+    if charset:
+        try:
+            return payload.decode(charset)
+        except (LookupError, UnicodeDecodeError):
+            pass
+
+    try:
+        return payload.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+
+    for enc in ("cp949", "euc-kr"):
+        try:
+            return payload.decode(enc)
+        except (LookupError, UnicodeDecodeError):
+            pass
+
+    fallback_enc = charset or "utf-8"
+    try:
+        return payload.decode(fallback_enc, errors="replace")
+    except LookupError:
+        return payload.decode("latin-1", errors="replace")
 
 
 class EmlParser:
@@ -199,6 +225,7 @@ class EmlParser:
             source_path=source_path,
             plain_body_generated=plain_body_generated,
             cc=self._decode_header_value(message.get("Cc", "")),
+            raw_headers="\n".join(f"{k}: {v}" for k, v in message.items()),
         )
 
     def extract_attachment(self, path: str | Path, attachment_index: int) -> ExtractedAttachment:
@@ -296,6 +323,7 @@ class EmlParser:
             source_path=path,
             plain_body_generated=plain_body_generated,
             cc=self._msg_header(msg, "cc"),
+            raw_headers=_coerce_text(getattr(msg, "headers", getattr(msg, "header", ""))),
         )
 
     def _extract_msg_attachment(self, path: Path, attachment_index: int) -> ExtractedAttachment:
@@ -399,17 +427,18 @@ class EmlParser:
             content_location=content_location,
         )
 
+    def _safe_decode(self, payload: bytes, charset: str | None) -> str:
+        return _safe_decode(payload, charset)
+
     def _safe_get_content(self, part: EmailMessage | Message) -> str:
         try:
             content = part.get_content()
         except Exception:
             payload = part.get_payload(decode=True) or b""
-            charset = part.get_content_charset() or "utf-8"
-            return payload.decode(charset, errors="replace")
+            return self._safe_decode(payload, part.get_content_charset())
 
         if isinstance(content, bytes):
-            charset = part.get_content_charset() or "utf-8"
-            return content.decode(charset, errors="replace")
+            return self._safe_decode(content, part.get_content_charset())
         return str(content)
 
     def _decode_header_value(self, value: str) -> str:

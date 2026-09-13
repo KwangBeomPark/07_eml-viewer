@@ -51,6 +51,29 @@ class FileOperationServiceTest(unittest.TestCase):
         self.assertEqual(service.sanitize_filename("CON"), "CON_")
         self.assertEqual(service.sanitize_filename("nul.txt"), "nul_.txt")
 
+    def test_write_bytes_applies_motw_on_windows(self) -> None:
+        import sys
+        service = FileOperationService()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dest = Path(temp_dir) / "test_motw.txt"
+            service.write_bytes(dest, b"hello motw", apply_motw=True)
+            self.assertEqual(dest.read_bytes(), b"hello motw")
+
+            if sys.platform == "win32":
+                zone_stream = Path(f"{dest}:Zone.Identifier")
+                try:
+                    content = zone_stream.read_text(encoding="utf-8")
+                    self.assertIn("ZoneId=3", content)
+                except OSError:
+                    # Non-NTFS or unsupported filesystem
+                    pass
+
+    def test_apply_motw_returns_false_on_non_windows(self) -> None:
+        from unittest.mock import patch
+        with patch("eml_viewer.services.file_operation_service.sys.platform", "linux"):
+            result = FileOperationService.apply_mark_of_the_web("dummy.txt")
+            self.assertFalse(result)
+
 
 if __name__ == "__main__":
     unittest.main()

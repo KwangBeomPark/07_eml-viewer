@@ -52,6 +52,15 @@ class SettingsService:
         cleaned = AppSettings._safe_recent_recipients(list(recipients))
         self.save_settings(replace(current, recent_recipients=cleaned))
 
+    def add_recent_file(self, file_path: str | Path) -> AppSettings:
+        current = self.load_settings()
+        path_str = str(Path(file_path).resolve())
+        new_list = [path_str] + [f for f in current.recent_files if f.casefold() != path_str.casefold()]
+        cleaned = AppSettings._safe_recent_files(new_list)
+        updated = replace(current, recent_files=cleaned)
+        self.save_settings(updated)
+        return updated
+
     @staticmethod
     def default_settings_path() -> Path:
         if sys.platform == "win32":

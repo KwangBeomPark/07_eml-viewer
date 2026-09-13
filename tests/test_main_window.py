@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --disable-software-rasterizer --no-sandbox")
@@ -253,6 +254,102 @@ class MainWindowTest(unittest.TestCase):
 
             window._print_action.trigger()
             mock_print_content.assert_called_once()
+
+    def test_folder_navigation(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dir_path = Path(temp_dir)
+            f1 = dir_path / "email1.eml"
+            f2 = dir_path / "email2.eml"
+            f3 = dir_path / "email3.eml"
+            for f in (f1, f2, f3):
+                f.write_text("Subject: Test\n\nBody", encoding="utf-8")
+
+            window.load_email(f2)
+            self.assertEqual(window._current_folder_index, 1)
+            self.assertTrue(window._prev_email_action.isEnabled())
+            self.assertTrue(window._next_email_action.isEnabled())
+
+            # 이전 이메일로 이동
+            window._prev_email_action.trigger()
+            self.assertEqual(window._current_folder_index, 0)
+            self.assertFalse(window._prev_email_action.isEnabled())
+            self.assertTrue(window._next_email_action.isEnabled())
+
+            # 다음 이메일로 이동 (f1 -> f2)
+            window._next_email_action.trigger()
+            self.assertEqual(window._current_folder_index, 1)
+
+            # 다음 이메일로 이동 (f2 -> f3)
+            window._next_email_action.trigger()
+            self.assertEqual(window._current_folder_index, 2)
+            self.assertTrue(window._prev_email_action.isEnabled())
+            self.assertFalse(window._next_email_action.isEnabled())
+
+    def test_recent_files_menu_updated_on_load(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = Path(temp_dir) / "recent_test.eml"
+            file_path.write_text("Subject: Recent\n\nBody", encoding="utf-8")
+
+            window.load_email(file_path)
+            actions = window._recent_files_menu.actions()
+            # 1 file entry + 1 separator + 1 clear action = 3
+            file_actions = [a for a in actions if not a.isSeparator() and a.isEnabled()]
+            self.assertEqual(len(file_actions), 2)  # file entry + clear
+            self.assertIn("recent_test.eml", file_actions[0].text())
+
+    def test_view_source_dialog(self) -> None:
+        from unittest.mock import patch
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        window._display_email(
+            ParsedEmail(
+                subject="Source Test",
+                sender="sender@example.com",
+                recipients="receiver@example.com",
+                date="2026-06-27",
+                plain_body="Source Plain Body",
+                html_body="",
+                raw_headers="Subject: Source Test\nFrom: sender@example.com",
+            )
+        )
+
+        with patch("eml_viewer.gui.dialogs.show_source_dialog") as mock_source_dialog:
+            window._view_source_action.trigger()
+            mock_source_dialog.assert_called_once()
+            args = mock_source_dialog.call_args[0]
+            self.assertNotEqual(args[1], "dialog.source.title")
+            self.assertEqual(args[1], "Message Source")
+            self.assertIn("Source Test", args[2])
+            self.assertIn("Source Plain Body", args[2])
+
+    def test_recent_files_menu_shows_empty_when_no_files(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        actions = window._recent_files_menu.actions()
+        self.assertEqual(len(actions), 1)
+        self.assertFalse(actions[0].isEnabled())
+        self.assertEqual(actions[0].text(), "(No Recent Files)")
+
+    def test_export_pdf_triggers_callback_and_shows_success(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        window._display_email(
+            ParsedEmail(
+                subject="PDF Export Test",
+                sender="sender@example.com",
+                recipients="receiver@example.com",
+                date="2026-06-27",
+                plain_body="PDF Content",
+                html_body="",
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out_file = str(Path(temp_dir) / "test_out.pdf")
+            with patch("PySide6.QtWidgets.QFileDialog.getSaveFileName", return_value=(out_file, "PDF (*.pdf)")), \
+                 patch("eml_viewer.gui.dialogs.show_info") as mock_info:
+                window._export_pdf_action.trigger()
+                mock_info.assert_called_once()
+                self.assertIn("test_out.pdf", mock_info.call_args[0][2])
 
 
 if __name__ == "__main__":

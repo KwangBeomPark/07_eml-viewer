@@ -12,6 +12,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
     QStyle,
     QToolButton,
     QVBoxLayout,
@@ -143,3 +145,37 @@ def show_error(parent: QWidget, title: str, message: str) -> None:
 
 def show_info(parent: QWidget, title: str, message: str) -> None:
     QMessageBox.information(parent, title, message)
+
+
+def show_source_dialog(parent: QWidget, title: str, source_text: str) -> None:
+    dialog = QDialog(parent)
+    dialog.setWindowTitle(title)
+    dialog.resize(750, 550)
+
+    layout = QVBoxLayout(dialog)
+    text_edit = QPlainTextEdit(dialog)
+    text_edit.setPlainText(source_text)
+    text_edit.setReadOnly(True)
+    text_edit.setStyleSheet("font-family: Consolas, 'Courier New', monospace; font-size: 10pt;")
+
+    btn_layout = QHBoxLayout()
+    copy_btn = QPushButton(tr("dialog.copy_to_clipboard"), dialog)
+    close_btn = QPushButton(tr("dialog.close"), dialog)
+    close_btn.clicked.connect(dialog.accept)
+
+    def copy_content():
+        from PySide6.QtGui import QGuiApplication
+
+        clipboard = QGuiApplication.clipboard()
+        clipboard.setText(source_text)
+        show_info(dialog, tr("dialog.copy_success.title"), tr("dialog.copy_success.message"))
+
+    copy_btn.clicked.connect(copy_content)
+
+    btn_layout.addWidget(copy_btn)
+    btn_layout.addStretch(1)
+    btn_layout.addWidget(close_btn)
+
+    layout.addWidget(text_edit)
+    layout.addLayout(btn_layout)
+    dialog.exec()
