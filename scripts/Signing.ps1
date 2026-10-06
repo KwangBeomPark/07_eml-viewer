@@ -38,9 +38,19 @@ function Invoke-SignBinary {
 
     # Check for signtool on PATH or standard locations
     $signtoolPath = $null
+    $candidates = @()
+    if ($env:SIGNTOOL_PATH) { $candidates += $env:SIGNTOOL_PATH }
     $onPath = Get-Command signtool.exe -ErrorAction SilentlyContinue
-    if ($null -ne $onPath) {
-        $signtoolPath = $onPath.Source
+    if ($null -ne $onPath) { $candidates += $onPath.Source }
+    $candidates += Join-Path $PSScriptRoot "..\tools\signtool\signtool.exe"
+    $candidates += Join-Path $PSScriptRoot "..\..\04_DataRefinery\tools\signtool\signtool.exe"
+    $candidates += Join-Path $PSScriptRoot "..\..\05_FileOperation\tools\_local\signing-tools\signtool.exe"
+    
+    foreach ($cand in $candidates) {
+        if (Test-Path -LiteralPath $cand) {
+            $signtoolPath = (Resolve-Path -LiteralPath $cand).Path
+            break
+        }
     }
 
     if ($null -ne $signtoolPath) {
@@ -71,6 +81,7 @@ function Invoke-SignBinary {
     }
 
     $sig = Get-AuthenticodeSignature -FilePath $FilePath
-    Write-Host "Signature verified: Status = $($sig.Status), Signer = $($sig.SignerCertificate.Subject)"
+    $signerName = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { "(Unknown / Unsigned)" }
+    Write-Host "Signature verified: Status = $($sig.Status), Signer = $signerName"
     return ($sig.Status -eq "Valid")
 }
