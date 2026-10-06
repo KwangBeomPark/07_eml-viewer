@@ -67,9 +67,10 @@ def main(argv: list[str] | None = None) -> int:
         print(tr("app.pyside_missing"), file=sys.stderr)
         return 1
 
-    from eml_viewer.gui.window_manager import WindowManager
+    from eml_viewer.app_identity import DISPLAY_NAME, WINDOWS_APP_ID
     from eml_viewer.gui.i18n import set_language
     from eml_viewer.gui.theme import apply_theme
+    from eml_viewer.gui.window_manager import WindowManager
     from eml_viewer.services.attachment_service import AttachmentService
     from eml_viewer.services.eml_parser import EmlParser
     from eml_viewer.services.file_operation_service import FileOperationService
@@ -77,9 +78,16 @@ def main(argv: list[str] | None = None) -> int:
     from eml_viewer.services.settings_service import SettingsService
     from eml_viewer.services.update_service import UpdateService
 
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(WINDOWS_APP_ID)
+        except Exception:
+            pass
+
     app = QApplication(argv)
-    app.setApplicationName("EML Viewer")
-    app.setOrganizationName("Local")
+    app.setApplicationName(DISPLAY_NAME)
+    app.setOrganizationName("PL_Suite")
     app.setApplicationVersion(__version__)
     icon_path = _resource_path("assets/app.ico")
     if icon_path.exists():

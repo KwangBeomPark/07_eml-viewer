@@ -3,7 +3,7 @@
 #define MyAppExeName "EmlViewer.exe"
 #define MyAppIcon "..\..\assets\app.ico"
 #ifndef MyAppVersion
-#define MyAppVersion "0.1.15"
+#define MyAppVersion "0.1.16"
 #endif
 
 [Setup]
@@ -21,7 +21,7 @@ UsePreviousGroup=no
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-OutputDir=..\..\installer
+OutputDir=..\..\release
 OutputBaseFilename=App07_EmlViewer_Setup_v{#MyAppVersion}
 Compression=lzma2/max
 SolidCompression=yes
@@ -48,12 +48,16 @@ english.MsgFileTypeName=Outlook MSG Email File
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "associateeml"; Description: "{cm:AssociateEmlTask}"; GroupDescription: "{cm:FileAssociationGroup}"; Flags: checkedonce
 
+[Dirs]
+; Generated user settings are preserved on uninstall
+Name: "{app}\UserSetting"; Flags: uninsneveruninstall
+
 [Files]
 Source: "..\..\dist\EmlViewer\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{userprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{userprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; AppUserModelID: "emlviewer.desktop.v1"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon; AppUserModelID: "emlviewer.desktop.v1"
 
 [Registry]
 Root: HKCU; Subkey: "Software\Classes\.eml"; ValueType: string; ValueName: ""; ValueData: "EMLViewer.eml"; Flags: uninsdeletevalue; Tasks: associateeml
