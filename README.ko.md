@@ -81,7 +81,8 @@ python -m pip install -e ".[build]"
 .\scripts\build_windows.ps1
 ```
 
-결과물은 `dist\EmlViewer`에 생성됩니다.
+미서명 결과물은 `dist\EmlViewer`에 생성됩니다. 개발 번들 서명은 명시적인
+`-Signed`와 인증서 thumbprint가 필요합니다. 공식 배포물은 아래 전체 배포 절차를 사용합니다.
 
 Windows 설치 파일 빌드:
 
@@ -90,7 +91,21 @@ python -m pip install -e ".[build]"
 .\scripts\build_installer.ps1
 ```
 
-설치 파일 빌드에는 Inno Setup 6이 필요합니다. 결과물은 `installer\`에 생성됩니다.
+Inno Setup 6 또는 7이 필요합니다. 이 명령은 고유한
+`build\release-staging\<id>\artifacts` 폴더에 **미서명 검수본**만 생성하며 `release\`를 바꾸지 않습니다.
+
+새 서명 릴리즈는 검수한 소스를 커밋하고 `pytest` 설치 후 사용자가 서명 세션을 활성화한 상태에서 실행합니다.
+
+```powershell
+.\scripts\sign_and_release.ps1 -CertificateThumbprint $env:SIGN_CERT_THUMBPRINT
+```
+
+테스트와 소스 지문 검사 후 번들 EXE에 먼저 서명하고 설치 파일·ZIP을 생성합니다.
+설치 파일은 한 번 서명한 검증본을 호환 별칭으로 복사합니다. ZIP 내부 파일의 서명,
+해시, 버전별 매니페스트·체크섬 목록이 검증된 후 공식 폴더에 반영됩니다.
+기존 공식 파일은 덮어쓰지 않으므로 다음 릴리즈는 새 버전으로 진행합니다.
+이 명령은 설치나 GitHub 게시를 하지 않습니다.
+[검수 결과 및 남은 실제 Windows 확인](docs/STANDARDIZATION_PHASE2_REVIEW.md)을 참조하세요.
 
 ## 설계 메모
 
@@ -113,3 +128,12 @@ python -m pip install -e ".[build]"
 git grep -n -I -i -E "api[_-]?key|secret|token|password|credential|client_secret|private key|confidential|internal|proprietary" -- .
 git grep -n -I -E "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|https?://" -- .
 ```
+
+
+공통 설치·설정·배포 정비의 기준과 현재 예외는 [6개 앱 공통 정비 기준](docs/SUITE_STANDARDIZATION.md)을 참고하세요.
+
+패키징 정의는 `installer/eml_viewer.spec`와 `installer/setup.iss`에 유지하며 이전 `packaging/` 경로는 호환 wrapper로 위임합니다.
+[공개 코드 지도](docs/CODE_MAP.md), [백업·검증 복원 안내](docs/USER_DATA.md),
+Windows PowerShell [백업 도구](scripts/Manage-UserData.ps1)를 함께 확인하세요.
+UserSetting 백업과 원본 이메일·저장 첨부·PDF의 별도 백업 범위를 구분하며 설정 화면에 실제 저장 폴더를 표시합니다.
+[설정·구조·사용 문구 검수](docs/STANDARDIZATION_PHASE3_5_REVIEW.md)를 참고하세요.

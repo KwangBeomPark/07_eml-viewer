@@ -5,9 +5,11 @@ __pycache__/
 
 build/
 dist/
-installer/
 release/
+results/
 *.spec.bak
+*.exe
+*.zip
 
 .pytest_cache/
 .mypy_cache/
@@ -15,6 +17,15 @@ release/
 
 *.log
 installer_log.txt
+
+# Private runtime settings and signing credentials
+UserSetting/
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.key
 
 # Local AI working notes
 AGENTS.md

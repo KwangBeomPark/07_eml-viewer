@@ -14,6 +14,8 @@ class AppSettings:
     language: str = "ko"
     theme: str = "system"
     auto_load_remote_images: bool = False
+    startup_with_windows: bool = False
+    minimize_to_tray_on_close: bool = True
     smtp_host: str = ""
     smtp_sender: str = ""
     smtp_port: int = 25
@@ -40,6 +42,12 @@ class AppSettings:
             auto_load_remote_images=cls._safe_bool(
                 data.get("auto_load_remote_images", cls.auto_load_remote_images)
             ),
+            startup_with_windows=cls._safe_bool(
+                data.get("startup_with_windows", cls.startup_with_windows)
+            ),
+            minimize_to_tray_on_close=cls._safe_bool(
+                data.get("minimize_to_tray_on_close", cls.minimize_to_tray_on_close)
+            ),
             smtp_host=str(data.get("smtp_host", cls.smtp_host)).strip(),
             smtp_sender=str(data.get("smtp_sender", cls.smtp_sender)).strip(),
             smtp_port=cls._safe_port(data.get("smtp_port", cls.smtp_port)),
@@ -56,6 +64,8 @@ class AppSettings:
             "language": self.language,
             "theme": self.theme,
             "auto_load_remote_images": self.auto_load_remote_images,
+            "startup_with_windows": self.startup_with_windows,
+            "minimize_to_tray_on_close": self.minimize_to_tray_on_close,
             "smtp_host": self.smtp_host,
             "smtp_sender": self.smtp_sender,
             "smtp_port": self.smtp_port,

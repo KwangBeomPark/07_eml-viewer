@@ -9,7 +9,6 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from eml_viewer import app_identity
-from eml_viewer.models.app_settings import AppSettings
 from eml_viewer.services.settings_service import SettingsService
 
 
@@ -60,7 +59,7 @@ class AppIdentityTest(unittest.TestCase):
             with patch("eml_viewer.services.settings_service.get_suite_common_fallback") as mock_fallback:
                 def fake_fallback(key: str, default: str = "") -> str:
                     if key == "SMTPServer":
-                        return "smtp.lge.com"
+                        return "smtp.example.com"
                     if key == "SMTPPort":
                         return "587"
                     return default
@@ -68,7 +67,7 @@ class AppIdentityTest(unittest.TestCase):
                 mock_fallback.side_effect = fake_fallback
 
                 loaded = service.load_settings()
-                self.assertEqual(loaded.smtp_host, "smtp.lge.com")
+                self.assertEqual(loaded.smtp_host, "smtp.example.com")
                 self.assertEqual(loaded.smtp_port, 587)
 
 

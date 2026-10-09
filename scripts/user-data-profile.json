@@ -1,0 +1,15 @@
+{
+  "appId": "App07_EmlViewer",
+  "displayName": "EML Viewer",
+  "installFolder": "EML Viewer",
+  "executableNames": [
+    "EmlViewer.exe",
+    "App07_EmlViewer.exe"
+  ],
+  "optionalDataFolders": [],
+  "externalData": [
+    "Source EML/MSG files",
+    "Saved attachments and exported PDF files",
+    "Legacy Roaming settings preserved after migration"
+  ]
+}

@@ -104,12 +104,12 @@ class UpdateService:
         if not isinstance(assets, list):
             return None
 
-        # 1. Prefer modern standard naming (App07_EmlViewer_Setup_*.exe)
+        # 1. Prefer modern standard naming (App07_EmlViewer-Setup_*.exe or App07_EmlViewer_Setup_*.exe)
         for asset in assets:
             if not isinstance(asset, dict):
                 continue
             name = str(asset.get("name", ""))
-            if name.startswith("App07_EmlViewer_Setup_") and name.lower().endswith(".exe"):
+            if name.startswith(("App07_EmlViewer-Setup_", "App07_EmlViewer_Setup_")) and name.lower().endswith(".exe"):
                 return {
                     "name": name,
                     "download_url": str(asset.get("browser_download_url", "")),

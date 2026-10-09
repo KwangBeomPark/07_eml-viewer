@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import logging
 import os
 import re
 import shutil
@@ -9,7 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QRect, Qt, QUrl, QThread, Signal
-from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
+from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -18,7 +19,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
-    QMenu,
     QMessageBox,
     QProgressDialog,
     QPushButton,
@@ -44,12 +44,14 @@ from eml_viewer.services.error_service import ErrorService
 from eml_viewer.services.file_operation_service import FileOperationService
 from eml_viewer.services.forward_service import ForwardConfigError, ForwardService
 from eml_viewer.services.settings_service import SettingsService
-from eml_viewer.services.update_service import UpdateCheckError, UpdateCheckResult, UpdateService
+from eml_viewer.services.update_service import UpdateCheckResult, UpdateService
+
+logger = logging.getLogger(__name__)
 
 
 class DownloadThread(QThread):
     progress = Signal(int, int)  # downloaded, total
-    finished = Signal(str)
+    download_finished = Signal(str)
     failed = Signal(str)
 
     def __init__(self, service: UpdateService, url: str, dest_path: str) -> None:
@@ -72,7 +74,7 @@ class DownloadThread(QThread):
                 cancel_event=self._cancel_event,
             )
             if not self._cancel_event.is_set():
-                self.finished.emit(self._dest_path)
+                self.download_finished.emit(self._dest_path)
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -228,6 +230,10 @@ class MainWindow(QMainWindow):
         self._exit_action.setShortcut("Alt+F4")
         self._exit_action.triggered.connect(self.close)
 
+        self._quit_action = QAction(self)
+        self._quit_action.setShortcut("Ctrl+Q")
+        self._quit_action.triggered.connect(self._on_exit_action_triggered)
+
         self._open_browser_action = QAction(self)
         self._open_browser_action.setShortcut("Ctrl+B")
         self._open_browser_action.triggered.connect(self._open_in_browser)
@@ -278,6 +284,7 @@ class MainWindow(QMainWindow):
         self._file_menu.addAction(self._settings_action)
         self._file_menu.addSeparator()
         self._file_menu.addAction(self._exit_action)
+        self._file_menu.addAction(self._quit_action)
 
         self._view_menu = self.menuBar().addMenu("")
         self._view_menu.addAction(self._view_source_action)
@@ -383,7 +390,8 @@ class MainWindow(QMainWindow):
         self._prev_email_action.setText(tr("action.prev_email"))
         self._next_email_action.setText(tr("action.next_email"))
         self._settings_action.setText(tr("menu.settings"))
-        self._exit_action.setText(tr("menu.exit"))
+        self._exit_action.setText(tr("menu.close"))
+        self._quit_action.setText(tr("menu.quit"))
         self._find_action.setText(tr("menu.find"))
         self._find_next_action.setText(tr("find.next"))
         self._find_prev_action.setText(tr("find.previous"))
@@ -472,7 +480,10 @@ class MainWindow(QMainWindow):
 
         self._display_email(parsed_email)
         self.statusBar().showMessage(tr("status.file_opened", source_path=parsed_email.source_path), 5000)
-        self._settings_service.add_recent_file(path)
+        try:
+            self._settings_service.add_recent_file(path)
+        except OSError as exc:
+            self._show_settings_save_error(exc)
         self._update_recent_files_menu()
         self._update_folder_navigation(path)
 
@@ -679,7 +690,7 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self) -> None:
         settings = self._settings_service.load_settings()
-        dialog = SettingsDialog(settings, self)
+        dialog = SettingsDialog(settings, self, settings_directory=self._settings_service.settings_path.parent)
         if dialog.exec() != SettingsDialog.DialogCode.Accepted:
             return
 
@@ -688,15 +699,23 @@ class MainWindow(QMainWindow):
             language=dialog.language,
             theme=dialog.theme,
             auto_load_remote_images=dialog.auto_load_remote_images,
+            startup_with_windows=dialog.startup_with_windows,
+            minimize_to_tray_on_close=dialog.minimize_to_tray_on_close,
             smtp_host=dialog.smtp_host,
             smtp_sender=dialog.smtp_sender,
             smtp_port=dialog.smtp_port,
         )
         language_changed = new_settings.language != settings.language
-        if self._window_manager is not None and hasattr(self._window_manager, "broadcast_settings"):
-            self._window_manager.broadcast_settings(new_settings)
-        else:
-            self._settings_service.save_settings(new_settings)
+        applied_settings = new_settings
+        try:
+            if self._window_manager is not None and hasattr(self._window_manager, "broadcast_settings"):
+                applied_settings = self._window_manager.broadcast_settings(new_settings) or new_settings
+            else:
+                self._settings_service.save_settings(new_settings)
+        except OSError as exc:
+            self._show_settings_save_error(exc)
+            return
+        if self._window_manager is None or not hasattr(self._window_manager, "broadcast_settings"):
             from eml_viewer.gui.i18n import set_language
             set_language(new_settings.language)
             apply_theme(QApplication.instance(), new_settings.theme)
@@ -704,6 +723,8 @@ class MainWindow(QMainWindow):
         if language_changed:
             self._retranslate_ui()
             dialogs.show_info(self, tr("settings.title"), tr("settings.language_applied"))
+        if new_settings.startup_with_windows != applied_settings.startup_with_windows:
+            dialogs.show_warning(self, tr("settings.title"), tr("settings.startup_sync_failed"))
         self.statusBar().showMessage(tr("settings.saved"), 5000)
 
     def _forward_current_email(self) -> None:
@@ -737,7 +758,10 @@ class MainWindow(QMainWindow):
             self._show_error(tr("forward.error.title"), exc)
             return
 
-        self._settings_service.save_recent_recipients((recipient, *selection.recent_recipients))
+        try:
+            self._settings_service.save_recent_recipients((recipient, *selection.recent_recipients))
+        except OSError as exc:
+            self._show_settings_save_error(exc)
         dialogs.show_info(
             self,
             tr("forward.success.title"),
@@ -951,14 +975,45 @@ class MainWindow(QMainWindow):
                 return True
         return False
 
+    def _on_exit_action_triggered(self) -> None:
+        """파일 메뉴의 '종료' 액션 트리거 시 트레이 상주 여부와 무관하게 애플리케이션을 완전히 종료합니다."""
+        if self._window_manager is not None and hasattr(self._window_manager, "force_quit"):
+            self._window_manager.force_quit()
+        else:
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
+            else:
+                self.close()
+
     def closeEvent(self, event) -> None:
+        if self._update_check_thread is not None and self._update_check_thread.isRunning():
+            thread = self._update_check_thread
+            try:
+                thread.disconnect(self)
+            except (RuntimeError, TypeError):
+                pass
+            if self._window_manager is not None and hasattr(self._window_manager, "retain_thread"):
+                self._window_manager.retain_thread(thread)
+            else:
+                thread.wait()
+            self._update_check_thread = None
+
+        if self._download_thread is not None and self._download_thread.isRunning():
+            thread = self._download_thread
+            thread.cancel()
+            try:
+                thread.disconnect(self)
+            except (RuntimeError, TypeError):
+                pass
+            if self._window_manager is not None and hasattr(self._window_manager, "retain_thread"):
+                self._window_manager.retain_thread(thread)
+            else:
+                thread.wait()
+            self._download_thread = None
+
         if self._window_manager is not None and hasattr(self._window_manager, "unregister_window"):
             self._window_manager.unregister_window(self)
-        if self._update_check_thread is not None and self._update_check_thread.isRunning():
-            self._update_check_thread.wait(1000)
-        if self._download_thread is not None and self._download_thread.isRunning():
-            self._download_thread.cancel()
-            self._download_thread.wait()
         try:
             geometry = self.geometry()
             self._settings_service.save_window_geometry(
@@ -967,8 +1022,8 @@ class MainWindow(QMainWindow):
                 width=geometry.width(),
                 height=geometry.height(),
             )
-        except Exception:
-            pass
+        except OSError as exc:
+            logger.warning("Window geometry could not be saved: %s", exc)
         try:
             if hasattr(self, "_cleanup_session_callback"):
                 atexit.unregister(self._cleanup_session_callback)
@@ -983,6 +1038,11 @@ class MainWindow(QMainWindow):
 
     def _show_error(self, title: str, error: Exception) -> None:
         dialogs.show_error(self, title, ErrorService.to_user_message(error))
+
+    def _show_settings_save_error(self, error: OSError) -> None:
+        logger.warning("Settings could not be saved: %s", error)
+        dialogs.show_error(self, tr("settings.title"), tr("settings.save_failed"))
+        self.statusBar().showMessage(tr("settings.save_failed"), 5000)
 
     def _check_for_updates(self) -> None:
         self.statusBar().showMessage(tr("update.checking"))
@@ -1032,7 +1092,11 @@ class MainWindow(QMainWindow):
     def _clear_recent_files(self) -> None:
         current = self._settings_service.load_settings()
         from dataclasses import replace as _replace
-        self._settings_service.save_settings(_replace(current, recent_files=()))
+        try:
+            self._settings_service.save_settings(_replace(current, recent_files=()))
+        except OSError as exc:
+            self._show_settings_save_error(exc)
+            return
         self._update_recent_files_menu()
         self.statusBar().showMessage(tr("status.recent_files_cleared"), 5000)
 
@@ -1099,7 +1163,7 @@ class MainWindow(QMainWindow):
 
         self._download_thread = DownloadThread(self._update_service, result.download_url, dest_path)
         self._download_thread.progress.connect(self._on_download_progress)
-        self._download_thread.finished.connect(self._on_download_finished)
+        self._download_thread.download_finished.connect(self._on_download_finished)
         self._download_thread.failed.connect(self._on_download_failed)
 
         self._progress_dialog.canceled.connect(self._download_thread.cancel)
@@ -1154,9 +1218,12 @@ class MainWindow(QMainWindow):
             return
 
         self.close()
-        app = QApplication.instance()
-        if app is not None:
-            app.quit()
+        if self._window_manager is not None and hasattr(self._window_manager, "force_quit"):
+            self._window_manager.force_quit()
+        else:
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
 
     def _on_download_failed(self, error_msg: str) -> None:
         self._progress_dialog.close()

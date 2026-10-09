@@ -1,87 +1,49 @@
 Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
+
+function Find-EmlSignTool {
+    param([string]$SignToolPath = $env:SIGNTOOL_PATH)
+    if ($SignToolPath) {
+        if (-not (Test-Path -LiteralPath $SignToolPath -PathType Leaf)) { throw 'Configured SIGNTOOL_PATH does not exist.' }
+        return (Resolve-Path -LiteralPath $SignToolPath).Path
+    }
+    $command = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    $local = Join-Path $PSScriptRoot '..\tools\signtool\signtool.exe'
+    if (Test-Path -LiteralPath $local -PathType Leaf) { return (Resolve-Path -LiteralPath $local).Path }
+    $sdk = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+    if (Test-Path -LiteralPath $sdk) {
+        $versions = Get-ChildItem -LiteralPath $sdk -Directory | Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } | Sort-Object { [version]$_.Name } -Descending
+        foreach ($version in $versions) {
+            $candidate = Join-Path $version.FullName 'x64\signtool.exe'
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+        }
+    }
+    throw 'signtool.exe was not found. Specify -SignToolPath or install the Windows SDK.'
+}
+
+function Assert-EmlSignature {
+    param([string]$FilePath, [string]$CertificateThumbprint)
+    $signature = Get-AuthenticodeSignature -LiteralPath $FilePath
+    if ($signature.Status -ne 'Valid' -or -not $signature.SignerCertificate -or
+        $signature.SignerCertificate.Thumbprint -ne $CertificateThumbprint -or -not $signature.TimeStamperCertificate) {
+        throw "Valid timestamped signature by intended signer required: $FilePath"
+    }
+    return [ordered]@{ status = 'Valid'; signer_thumbprint = $signature.SignerCertificate.Thumbprint; timestamp_thumbprint = $signature.TimeStamperCertificate.Thumbprint }
+}
 
 function Invoke-SignBinary {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$FilePath,
-
-        [string]$CertificateThumbprint = $env:SIGN_CERT_THUMBPRINT,
-
-        [string]$TimestampServer = "http://timestamp.digicert.com"
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string]$CertificateThumbprint,
+        [string]$TimestampServer = 'http://timestamp.digicert.com',
+        [string]$SignToolPath = $env:SIGNTOOL_PATH
     )
-
-    if ([string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
-        # Default to user's code signing certificate thumbprint if not specified
-        $CertificateThumbprint = "E9C72CF5090840A1805296525D56BE680622A7FD"
-    }
-
-    if (-not (Test-Path -LiteralPath $FilePath)) {
-        throw "File to sign not found: $FilePath"
-    }
-
-    $cert = Get-Item "Cert:\CurrentUser\My\$CertificateThumbprint" -ErrorAction SilentlyContinue
-    if (-not $cert) {
-        $certs = @(Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert | Where-Object { $_.Thumbprint -eq $CertificateThumbprint })
-        if ($certs.Count -gt 0) {
-            $cert = $certs[0]
-        }
-    }
-
-    if (-not $cert) {
-        Write-Warning "Code signing certificate '$CertificateThumbprint' not found in Cert:\CurrentUser\My. Skipping signing."
-        return $false
-    }
-
-    Write-Host "Signing $FilePath with certificate: $($cert.Subject) [$($cert.Thumbprint)]"
-
-    # Check for signtool on PATH or standard locations
-    $signtoolPath = $null
-    $candidates = @()
-    if ($env:SIGNTOOL_PATH) { $candidates += $env:SIGNTOOL_PATH }
-    $onPath = Get-Command signtool.exe -ErrorAction SilentlyContinue
-    if ($null -ne $onPath) { $candidates += $onPath.Source }
-    $candidates += Join-Path $PSScriptRoot "..\tools\signtool\signtool.exe"
-    $candidates += Join-Path $PSScriptRoot "..\..\04_DataRefinery\tools\signtool\signtool.exe"
-    $candidates += Join-Path $PSScriptRoot "..\..\05_FileOperation\tools\_local\signing-tools\signtool.exe"
-    
-    foreach ($cand in $candidates) {
-        if (Test-Path -LiteralPath $cand) {
-            $signtoolPath = (Resolve-Path -LiteralPath $cand).Path
-            break
-        }
-    }
-
-    if ($null -ne $signtoolPath) {
-        Write-Host "Using signtool.exe at: $signtoolPath"
-        $signArgs = @("sign", "/sha1", $CertificateThumbprint, "/fd", "sha256")
-        if (-not [string]::IsNullOrWhiteSpace($TimestampServer)) {
-            $signArgs += @("/tr", $TimestampServer, "/td", "sha256")
-        }
-        $signArgs += $FilePath
-        & $signtoolPath $signArgs
-        if ($LASTEXITCODE -ne 0) {
-            throw "signtool failed with exit code $LASTEXITCODE"
-        }
-    } else {
-        Write-Host "Using PowerShell Set-AuthenticodeSignature..."
-        $signParams = @{
-            FilePath      = $FilePath
-            Certificate   = $cert
-            HashAlgorithm = "SHA256"
-        }
-        if (-not [string]::IsNullOrWhiteSpace($TimestampServer)) {
-            $signParams.TimestampServer = $TimestampServer
-        }
-        $result = Set-AuthenticodeSignature @signParams
-        if ($result.Status -ne "Valid") {
-            Write-Warning "Set-AuthenticodeSignature status: $($result.Status) ($($result.StatusMessage))"
-        }
-    }
-
-    $sig = Get-AuthenticodeSignature -FilePath $FilePath
-    $signerName = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { "(Unknown / Unsigned)" }
-    Write-Host "Signature verified: Status = $($sig.Status), Signer = $signerName"
-    return ($sig.Status -eq "Valid")
+    if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) { throw "File to sign not found: $FilePath" }
+    if ([string]::IsNullOrWhiteSpace($CertificateThumbprint) -or [string]::IsNullOrWhiteSpace($TimestampServer)) { throw 'Signer and timestamp server are required.' }
+    $tool = Find-EmlSignTool $SignToolPath
+    & $tool sign /sha1 $CertificateThumbprint /fd sha256 /tr $TimestampServer /td sha256 $FilePath
+    if ($LASTEXITCODE -ne 0) { throw "signtool failed: $LASTEXITCODE" }
+    Assert-EmlSignature $FilePath $CertificateThumbprint | Out-Null
 }

@@ -330,6 +330,98 @@ class MainWindowTest(unittest.TestCase):
         self.assertFalse(actions[0].isEnabled())
         self.assertEqual(actions[0].text(), "(No Recent Files)")
 
+    def test_settings_save_failure_does_not_apply_changes_or_claim_success(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        dialog = MagicMock()
+        dialog.exec.return_value = 1
+        dialog.language = "en"
+        dialog.theme = "dark"
+        dialog.auto_load_remote_images = True
+        dialog.smtp_host = "smtp.example.com"
+        dialog.smtp_sender = "sender@example.com"
+        dialog.smtp_port = 587
+        with patch("eml_viewer.gui.main_window.SettingsDialog", return_value=dialog) as dialog_class, patch.object(
+            window._settings_service, "save_settings", side_effect=PermissionError("locked"),
+        ), patch.object(window, "apply_settings") as apply_settings, patch(
+            "eml_viewer.gui.dialogs.show_error",
+        ) as show_error, patch("eml_viewer.gui.dialogs.show_info") as show_info:
+            dialog_class.DialogCode.Accepted = 1
+            window._open_settings()
+        apply_settings.assert_not_called()
+        show_error.assert_called_once()
+        show_info.assert_not_called()
+        self.assertIn("Could not save", window.statusBar().currentMessage())
+
+    def test_settings_broadcast_failure_is_reported(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        manager = MagicMock()
+        manager.broadcast_settings.side_effect = PermissionError("locked")
+        window._window_manager = manager
+        dialog = MagicMock()
+        dialog.exec.return_value = 1
+        with patch("eml_viewer.gui.main_window.SettingsDialog", return_value=dialog) as dialog_class, patch(
+            "eml_viewer.gui.dialogs.show_error",
+        ) as show_error:
+            dialog_class.DialogCode.Accepted = 1
+            window._open_settings()
+        manager.broadcast_settings.assert_called_once()
+        show_error.assert_called_once()
+        self.assertIn("Could not save", window.statusBar().currentMessage())
+
+    def test_settings_startup_sync_failure_shows_warning(self) -> None:
+        from dataclasses import replace
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        current = window._settings_service.load_settings()
+        manager = MagicMock()
+        # 사용자는 True로 변경하려 했으나 실제로는 False로 되돌아옴
+        manager.broadcast_settings.return_value = replace(current, startup_with_windows=False)
+        window._window_manager = manager
+        dialog = MagicMock()
+        dialog.exec.return_value = 1
+        dialog.startup_with_windows = True
+        dialog.language = current.language
+        dialog.theme = current.theme
+        dialog.auto_load_remote_images = current.auto_load_remote_images
+        dialog.minimize_to_tray_on_close = current.minimize_to_tray_on_close
+        dialog.smtp_host = current.smtp_host
+        dialog.smtp_sender = current.smtp_sender
+        dialog.smtp_port = current.smtp_port
+        with patch("eml_viewer.gui.main_window.SettingsDialog", return_value=dialog) as dialog_class, patch(
+            "eml_viewer.gui.dialogs.show_warning",
+        ) as show_warning:
+            dialog_class.DialogCode.Accepted = 1
+            window._open_settings()
+        show_warning.assert_called_once()
+
+    def test_recent_history_failure_does_not_interrupt_email_navigation(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = Path(temp_dir) / "mail.eml"
+            file_path.write_text("Subject: Test\n\nBody", encoding="utf-8")
+            with patch.object(window._settings_service, "add_recent_file", side_effect=OSError("disk full")), patch(
+                "eml_viewer.gui.dialogs.show_error",
+            ) as show_error:
+                window.load_email(file_path)
+            self.assertEqual(window._current_email.subject, "Test")
+            self.assertEqual(window._current_folder_index, 0)
+            show_error.assert_called_once()
+
+    def test_clear_recent_failure_keeps_saved_history(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = Path(temp_dir) / "mail.eml"
+            file_path.write_text("Subject: Test\n\nBody", encoding="utf-8")
+            window.load_email(file_path)
+            original = window._settings_service.settings_path.read_bytes()
+            with patch.object(window._settings_service, "save_settings", side_effect=PermissionError("locked")), patch(
+                "eml_viewer.gui.dialogs.show_error",
+            ) as show_error:
+                window._clear_recent_files()
+            self.assertEqual(window._settings_service.settings_path.read_bytes(), original)
+            self.assertIn("mail.eml", window._recent_files_menu.actions()[0].text())
+            self.assertIn("Could not save", window.statusBar().currentMessage())
+            show_error.assert_called_once()
+
     def test_export_pdf_triggers_callback_and_shows_success(self) -> None:
         window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
         window._display_email(
@@ -351,7 +443,49 @@ class MainWindowTest(unittest.TestCase):
                 mock_info.assert_called_once()
                 self.assertIn("test_out.pdf", mock_info.call_args[0][2])
 
+    def test_recipient_history_failure_does_not_mark_sent_mail_as_failed(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        window._current_email = ParsedEmail(
+            subject="Sent mail", sender="sender@example.com", recipients="recipient@example.com",
+            date="2026-10-07", plain_body="Body", html_body="",
+        )
+        selection = dialogs.ForwardRecipientSelection("recipient@example.com", ())
+        with patch("eml_viewer.gui.dialogs.request_forward_recipients", return_value=selection), patch.object(
+            window._forward_service, "forward_email", return_value="recipient@example.com",
+        ) as forward, patch.object(
+            window._settings_service, "save_recent_recipients", side_effect=OSError("disk full"),
+        ), patch("eml_viewer.gui.dialogs.show_error") as show_error, patch(
+            "eml_viewer.gui.dialogs.show_info",
+        ) as show_info:
+            window._forward_current_email()
+        forward.assert_called_once()
+        show_error.assert_called_once()
+        show_info.assert_called_once()
+        self.assertIn("recipient@example.com", show_info.call_args[0][2])
+
+    def test_quit_action_calls_force_quit_on_window_manager(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        mock_manager = MagicMock()
+        window._window_manager = mock_manager
+        window._quit_action.trigger()
+        mock_manager.force_quit.assert_called_once()
+
+    def test_exit_action_closes_current_window(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        mock_manager = MagicMock()
+        window._window_manager = mock_manager
+        closed = []
+        original_close_event = window.closeEvent
+
+        def custom_close_event(event):
+            closed.append(True)
+            original_close_event(event)
+
+        window.closeEvent = custom_close_event
+        window._exit_action.trigger()
+        self.assertTrue(closed)
+        mock_manager.force_quit.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -80,7 +80,9 @@ python -m pip install -e ".[build]"
 .\scripts\build_windows.ps1
 ```
 
-The output is created in `dist\EmlViewer`.
+The unsigned output is created in `dist\EmlViewer`. Signing a development bundle
+requires explicit `-Signed` and a certificate thumbprint. Use the release pipeline below
+for the complete signed distribution.
 
 Build the Windows installer:
 
@@ -89,7 +91,21 @@ python -m pip install -e ".[build]"
 .\scripts\build_installer.ps1
 ```
 
-Inno Setup 6 is required for the installer. The output is created in `installer\`.
+Inno Setup 6 or 7 is required. This command creates an **unsigned preview** in a unique
+`build\release-staging\<id>\artifacts` folder and never changes `release\`.
+
+For a new signed release, commit the reviewed source, install `pytest`, activate your signing session and run:
+
+```powershell
+.\scripts\sign_and_release.ps1 -CertificateThumbprint $env:SIGN_CERT_THUMBPRINT
+```
+
+The pipeline tests and fingerprints the source, signs all bundled EXEs before
+packaging, signs the installer once and copies its identical compatibility alias.
+ZIP payloads, signatures, hashes and a version-specific manifest/checksum list are
+verified before promotion. Existing official files are never overwritten; use a
+new version for the next release. No command above publishes or installs the app.
+See [release verification and remaining Windows checks](docs/STANDARDIZATION_PHASE2_REVIEW.md).
 
 ## Design Notes
 
@@ -112,3 +128,14 @@ Useful checks:
 git grep -n -I -i -E "api[_-]?key|secret|token|password|credential|client_secret|private key|confidential|internal|proprietary" -- .
 git grep -n -I -E "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|https?://" -- .
 ```
+
+
+Shared installation, settings, release goals, and current exceptions are documented in [Suite standardization](docs/SUITE_STANDARDIZATION.md).
+
+Packaging definitions are maintained in `installer/eml_viewer.spec` and `installer/setup.iss`.
+The previous `packaging/` entry points delegate to these files for compatibility.
+[Public code map](docs/CODE_MAP.md) describes module responsibilities and storage.
+[Backup and verified restore](docs/USER_DATA.md) and the Windows PowerShell
+[backup tool](scripts/Manage-UserData.ps1) preserve UserSetting; original emails,
+saved attachments and PDFs require separate backups. Settings displays the actual saved folder.
+See [settings, layout and UI verification](docs/STANDARDIZATION_PHASE3_5_REVIEW.md).
