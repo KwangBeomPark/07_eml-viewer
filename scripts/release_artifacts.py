@@ -2,10 +2,9 @@
 
 Authenticode is checked by ReleasePipeline.ps1.
 This module never signs, builds, installs, deletes old releases or publishes.
-Standard single installer release format:
-- App07_EmlViewer-Setup_v{version}.exe
-- build-manifest.json
-- SHA256SUMS.txt
+Standard single installer release format uses the App07_EmlViewer_Setup_v
+installer and versioned manifest/checksum files. The legacy extract action
+is a verification alias and never extracts files.
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 
 
@@ -309,6 +309,11 @@ def main() -> None:
         assert_authenticode(args.stage, args.version, receipt["source"])
         promote(args.stage, args.release, args.version, receipt["source"])
     elif args.action in ("verify", "extract"):
+        if args.action == "extract":
+            print(
+                "Deprecated: extract verifies only; use verify. No files were extracted.",
+                file=sys.stderr,
+            )
         folder = args.release or args.stage / "artifacts"
         verify(folder, args.version, receipt["source"])
 

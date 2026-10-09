@@ -40,7 +40,7 @@ This is an open project. The documentation intentionally avoids company names, i
 
 The Windows installer is intended for users who do not have Python installed.
 
-1. Download and run `EmlViewerSetup-<version>.exe`.
+1. Download and run `App07_EmlViewer_Setup_v<version>.exe`.
 2. Keep the file association option enabled if you want `.eml` and `.msg` files to open with EML Viewer.
 3. After installation, launch `EML Viewer` from the Start menu or double-click an `.eml` or `.msg` file.
 
@@ -101,11 +101,12 @@ For a new signed release, commit the reviewed source, install `pytest`, activate
 ```
 
 The pipeline tests and fingerprints the source, signs all bundled EXEs before
-packaging, signs the installer once and copies its identical compatibility alias.
-ZIP payloads, signatures, hashes and a version-specific manifest/checksum list are
-verified before promotion. Existing official files are never overwritten; use a
+packaging and signs one installer, `App07_EmlViewer_Setup_v<version>.exe`.
+Signatures, hashes and a version-specific manifest/checksum list are verified
+before promotion. Installer aliases and ZIP packages are no longer generated.
+Existing official files are never overwritten; use a
 new version for the next release. No command above publishes or installs the app.
-See [release verification and remaining Windows checks](docs/STANDARDIZATION_PHASE2_REVIEW.md).
+See the current [release checklist and remaining Windows checks](RELEASE_CHECKLIST.md).
 
 ## Design Notes
 

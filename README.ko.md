@@ -41,7 +41,7 @@ EML Viewer는 Windows에서 `.eml` 및 Outlook `.msg` 이메일 파일을 편하
 
 Windows 설치 파일은 Python이 없는 사용자도 실행할 수 있도록 만드는 배포 방식입니다.
 
-1. `EmlViewerSetup-<version>.exe` 파일을 내려받아 실행합니다.
+1. `App07_EmlViewer_Setup_v<version>.exe` 파일을 내려받아 실행합니다.
 2. `.eml` 및 `.msg` 파일 연결 옵션을 사용하려면 기본 체크 상태로 둡니다.
 3. 설치 후 시작 메뉴에서 `EML Viewer`를 실행하거나 `.eml` 또는 `.msg` 파일을 더블클릭합니다.
 
@@ -100,12 +100,13 @@ Inno Setup 6 또는 7이 필요합니다. 이 명령은 고유한
 .\scripts\sign_and_release.ps1 -CertificateThumbprint $env:SIGN_CERT_THUMBPRINT
 ```
 
-테스트와 소스 지문 검사 후 번들 EXE에 먼저 서명하고 설치 파일·ZIP을 생성합니다.
-설치 파일은 한 번 서명한 검증본을 호환 별칭으로 복사합니다. ZIP 내부 파일의 서명,
-해시, 버전별 매니페스트·체크섬 목록이 검증된 후 공식 폴더에 반영됩니다.
+테스트와 소스 지문 검사 후 번들 EXE에 먼저 서명하고 설치 파일
+`App07_EmlViewer_Setup_v<version>.exe` 한 개를 생성·서명합니다.
+설치 별칭·ZIP은 생성하지 않습니다. 실제 서명·해시·버전별 매니페스트·체크섬
+목록이 검증된 후 공식 폴더에 반영됩니다.
 기존 공식 파일은 덮어쓰지 않으므로 다음 릴리즈는 새 버전으로 진행합니다.
 이 명령은 설치나 GitHub 게시를 하지 않습니다.
-[검수 결과 및 남은 실제 Windows 확인](docs/STANDARDIZATION_PHASE2_REVIEW.md)을 참조하세요.
+현재 [릴리스 체크리스트와 남은 실제 Windows 확인](RELEASE_CHECKLIST.md)을 참조하세요.
 
 ## 설계 메모
 

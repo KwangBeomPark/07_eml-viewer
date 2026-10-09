@@ -125,6 +125,7 @@ def test_invalid_legacy_settings_do_not_create_default_target(migration, content
     assert not target.exists()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows no-replace fallback")
 def test_hard_link_unsupported_filesystem_falls_back_to_replace(migration, monkeypatch):
     source, target = migration
     original = source.read_bytes()
@@ -139,3 +140,46 @@ def test_hard_link_unsupported_filesystem_falls_back_to_replace(migration, monke
     assert service.load_settings().smtp_port == 25
     assert source.read_bytes() == original
     assert list(target.parent.iterdir()) == [target]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows no-replace fallback")
+def test_windows_fallback_preserves_raced_destination(migration, monkeypatch):
+    source, target = migration
+    original = source.read_bytes()
+    raced = b'{"smtp_port": 2525}'
+    move = settings_service._move_windows_no_replace
+
+    def unsupported(*_):
+        raise OSError("Hard links unsupported")
+
+    def race(staged, destination):
+        destination.write_bytes(raced)
+        move(staged, destination)
+
+    monkeypatch.setattr(settings_service.os, "link", unsupported)
+    monkeypatch.setattr(settings_service, "_move_windows_no_replace", race)
+    service = SettingsService(target, auto_migrate=True)
+    assert service.load_settings().smtp_port == 2525
+    assert target.read_bytes() == raced
+    assert source.read_bytes() == original
+    assert list(target.parent.iterdir()) == [target]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows no-replace fallback")
+def test_windows_fallback_permission_failure_keeps_original(migration, monkeypatch):
+    source, target = migration
+    original = source.read_bytes()
+
+    def unsupported(*_):
+        raise OSError("Hard links unsupported")
+
+    def denied(*_):
+        raise PermissionError("Injected access denied")
+
+    monkeypatch.setattr(settings_service.os, "link", unsupported)
+    monkeypatch.setattr(settings_service, "_move_windows_no_replace", denied)
+    with pytest.raises(OSError, match="migration failed"):
+        SettingsService(target, auto_migrate=True)
+    assert not target.exists()
+    assert source.read_bytes() == original
+    assert not list(target.parent.iterdir())

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
-import zipfile
+import sys
 
 import pytest
 
@@ -286,3 +286,40 @@ def test_promotion_junction_target_rejected(staged, tmp_path):
         assert not list(target.iterdir())
     finally:
         junction.rmdir()
+
+
+def test_hard_link_unsupported_keeps_existing_release(staged, tmp_path, monkeypatch):
+    stage, _ = staged
+    official = tmp_path / "release"
+    official.mkdir()
+    sentinel = official / "old.exe"
+    sentinel.write_bytes(b"previous official bytes")
+
+    def unsupported(*_):
+        raise OSError("Hard links unsupported")
+
+    monkeypatch.setattr(release.os, "link", unsupported)
+    with pytest.raises(OSError, match="unsupported"):
+        release.promote(stage, official, VERSION, SOURCE)
+    assert list(official.iterdir()) == [sentinel]
+    assert sentinel.read_bytes() == b"previous official bytes"
+
+
+def test_extract_alias_verifies_without_writing_files(staged, monkeypatch, capsys):
+    stage, receipt = staged
+    (stage / "receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+    before = {
+        path.relative_to(stage): path.read_bytes()
+        for path in stage.rglob("*") if path.is_file()
+    }
+    monkeypatch.setattr(sys, "argv", [
+        "release_artifacts.py", "extract", "--stage", str(stage),
+        "--version", VERSION,
+    ])
+    release.main()
+    assert "No files were extracted" in capsys.readouterr().err
+    after = {
+        path.relative_to(stage): path.read_bytes()
+        for path in stage.rglob("*") if path.is_file()
+    }
+    assert before == after

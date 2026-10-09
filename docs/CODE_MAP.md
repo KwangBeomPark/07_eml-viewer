@@ -15,8 +15,8 @@ FileOps Hub의 파일 일괄 변환·동기화와 별도 앱으로 유지합니�
 | `installer/eml_viewer.spec`, `installer/setup.iss` | PyInstaller·Inno의 유일한 정의. staging 출력·기존 AppId/경로·UserSetting 보호 |
 | `packaging/pyinstaller/eml_viewer.spec`, `packaging/inno/eml_viewer.iss` | 과거 경로의 호환 wrapper. 새 정의로 위임하며 별도 제품 정의를 유지하지 않음 |
 | `scripts/build_windows.ps1`, `build_installer.ps1` | 앱 번들 및 미서명 설치 검수본. 공식 release 변경 없음 |
-| `scripts/ReleasePipeline.ps1`, `sign_and_release.ps1` | clean source·테스트→번들 EXE 서명→설치/ZIP→검증→덮어쓰기 없는 승격 |
-| `scripts/release_artifacts.py` | ZIP·전체 해시·출처·서명 근거, 배타적 신규 파일 반영, 외부 변경 파일을 보존하는 롤백 |
+| `scripts/ReleasePipeline.ps1`, `sign_and_release.ps1` | clean source·테스트→번들 EXE 서명→설치 EXE 한 개→검증→덮어쓰기 없는 승격 |
+| `scripts/release_artifacts.py` | 설치 EXE·해시·출처·서명 근거, 배타적 신규 파일 반영, 외부 변경 파일을 보존하는 롤백. extract는 경고를 출력하는 verify-only 호환 alias |
 | `scripts/Signing.ps1`, `VerifySignatures.ps1` | 지정 서명자·타임스탬프 검증. 검증 스크립트는 실제 서명을 하지 않음 |
 | `tests/` | 사용자 설정·기존 Roaming 경로·cwd 격리, 저장/SMTP/배포 실패주입 |
 

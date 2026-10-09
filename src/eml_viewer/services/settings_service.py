@@ -19,6 +19,23 @@ from eml_viewer.app_identity import (
 from eml_viewer.models.app_settings import AppSettings
 
 
+def _move_windows_no_replace(source: Path, destination: Path) -> None:
+    """Publish a complete sibling file without replacing a concurrent target."""
+    import ctypes
+    from ctypes import wintypes
+
+    move = ctypes.WinDLL("kernel32", use_last_error=True).MoveFileW
+    move.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR)
+    move.restype = wintypes.BOOL
+    if not move(str(source), str(destination)):
+        error = ctypes.get_last_error()
+        if error in (80, 183):
+            raise FileExistsError(
+                error, "Settings destination already exists", str(destination)
+            )
+        raise ctypes.WinError(error)
+
+
 class SettingsService:
     """창 크기와 위치 같은 사용자 설정을 JSON 파일에 저장합니다.
     PL Suite storage convention 및 00_Registry 레지스트리 표준을 준수합니다.
@@ -70,14 +87,10 @@ class SettingsService:
                     # Fallback for filesystems that do not support hard links (e.g., FAT32, exFAT).
                     # Atomically publish without overwriting if target was created concurrently.
                     if sys.platform == "win32":
-                        import ctypes
-
-                        # MoveFileW fails if destination exists (no MOVEFILE_REPLACE_EXISTING)
-                        if not ctypes.windll.kernel32.MoveFileW(str(staged), str(self.settings_path)):
-                            err = ctypes.GetLastError()
-                            if err in (80, 183):  # ERROR_FILE_EXISTS, ERROR_ALREADY_EXISTS
-                                return
-                            raise ctypes.WinError(err)
+                        try:
+                            _move_windows_no_replace(staged, self.settings_path)
+                        except FileExistsError:
+                            return
                         staged = None
                         return
                     else:

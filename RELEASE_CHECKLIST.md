@@ -1,23 +1,23 @@
 # EML Viewer 사용자 릴리즈 체크리스트
 
-2026-10-09 현재 소스 재확인. 이 문서만 갱신했으며 코드·사용자 자료·배포물을 변경하거나 삭제·서명·설치·게시를 실행하지 않았습니다.
+2026-10-09 릴리스 준비 수정·검수. 설정 이관의 Windows 오류 확인·경합 검사, CLI 안내와 문서를 최소 수정하고 격리 회귀·미서명 빌드를 실행했습니다. 실제 사용자 설정·기존 공식 파일은 유지했으며 KSP 서명·설치·게시·태그 생성·커밋은 실행하지 않았습니다.
 
 ## 현재 판정과 선행 게이트
 
 현재 소스 버전은 **0.1.17**, 공개 최신은 0.1.16입니다. 공식 계약은 `App07_EmlViewer_Setup_v<version>.exe` 하나와 `App07_EmlViewer_v<version>-manifest.json`, `App07_EmlViewer_v<version>-SHA256SUMS.txt`의 **3개**입니다. 이전 별칭/설치 ZIP/포터블 ZIP 생성은 제거돼 있습니다. 과거 공개 자산은 유지합니다.
 
-- [ ] 이 설치 파일 표기를 최종 확정합니다. 현재 updater의 App07_EmlViewer_Setup_ 우선 패턴과 맞습니다. 제안 이름은 현재 표기와 동일하지만 사용자 선택은 아직 대기입니다.
-- [ ] 현재 단일 계약으로 실제 회귀·빌드·서명 검수를 다시 수행합니다. 이전 177개+36 subtests는 이후 소스 변경의 통과로 표시하지 않습니다. current pyproject와 __init__ 버전도 함께 확인합니다.
-- [ ] 추가된 트레이·시작 시 자동 실행·단일 인스턴스·윈도우 관리의 실제 동작과 회귀를 검수합니다. 현재 git diff --check는 다른 작업의 tests/test_main_window.py:451 EOF 빈 줄을 지적하므로 작성자 변경과 함께 정리합니다.
+- [x] 설치 파일 표기를 `App07_EmlViewer_Setup_v<version>.exe`로 맞췄습니다. 현재 updater 우선 패턴과 일치합니다. AppId·설치 폴더는 유지합니다.
+- [x] 현재 소스의 전체 자동 회귀 **214개+36 subtests**, mock signing/path **10**, backup **32** 검사 통과. 이전 177개 결과 대신 이번 소스 결과를 사용합니다. 버전은 pyproject·__init__·설치 기본값 모두 **0.1.17**, 로컬/원격 v0.1.17 태그 부재를 조회로 확인했습니다. 게시 직전에 다시 확인합니다.
+- [ ] 트레이·시작 시 자동 실행·단일 인스턴스·윈도우 관리의 실제 동작을 확인합니다. 이번 자동 회귀는 offscreen이며 실제 시작프로그램/화면/SMTP·Windows 설치를 대신하지 않습니다.
 - [ ] 구버전 updater/외부 링크가 새 자산을 받을 수 있는지 확인합니다. 설치 AppId·EmlViewer.exe·파일 연결·UserSetting은 파일명과 별개로 유지합니다.
-- [ ] 이전 extract action은 현재 verify만 수행하고 추출 경로를 출력하지 않습니다. 아래는 실제 signed staging을 검사하는 현재 명령입니다. 불필요한 CLI action 제거는 별도 정리 후보로 검토합니다.
+- [x] extract는 verify-only 호환 alias임을 경고로 명시했습니다. 실제 추출 경로를 출력한다는 안내를 제거했으며 이번 검사에서 파일을 생성/변경하지 않는 것을 확인했습니다. 아래는 실제 signed staging을 검사하는 명령입니다.
 - [ ] 아래 파일 시스템·경합/권한 및 Windows 설치 게이트를 완료합니다. 정책을 해제/우회하거나 실제 사용자 환경으로 설치 시험을 하지 않습니다.
 
 ## 이관과 파일 시스템
 
-설정 이관은 기존 hard-link 방식 실패 시 Windows MoveFileW의 덮어쓰기 없는 승격 fallback을 사용하는 코드가 추가됐습니다. 따라서 이전 'fallback 없음' 설명은 현재에 적용하지 않습니다. hard-link 불가 mock 검사는 확인됐으나 실제 FAT32/exFAT USB와 Windows 대상 생성 경합·권한 오류 성공 기록은 확인하지 못했습니다. 포터블 지원은 현재 생성 정책과 구분해 결정합니다.
+설정 이관은 hard-link 실패 시 Windows MoveFileW로 덮어쓰기 없이 승격합니다. 이번에는 Unicode 인자와 Win32 오류를 명시적으로 확인하고 hard-link 불가 시 실제 MoveFileW의 성공·대상 생성 경합 보존, 권한 오류 실패주입·원본 보존을 검사했습니다. 실제 FAT32/exFAT USB와 보안 정책/ACL의 실환경 검수는 남아 있습니다. POSIX에서 hard link를 사용할 수 없으면 부분 파일을 쓰지 않고 거부합니다.
 
-공식 release 승격은 여전히 os.link를 사용하므로 서명 배포 작업 폴더도 hard link 지원을 확인합니다. FAT32/exFAT는 hard link 미지원입니다([Microsoft 비교표](https://learn.microsoft.com/en-us/windows/win32/fileio/filesystem-functionality-comparison)). 원본 Roaming과 기존 새 설정을 지우지 않으며 실패/재시도·부분 파일 보호를 검수합니다.
+공식 release 승격은 os.link를 사용하며 현재 작업 드라이브 C:가 NTFS인 것을 읽기 확인했습니다. hard link 불가 시 원본 release를 보존하고 실패하는 자동 검사가 통과했습니다. 임시 파일은 목적지 디렉터리에 생성되며 다른 볼륨으로 연결하지 않습니다. FAT32/exFAT는 hard link 미지원입니다([Microsoft 비교표](https://learn.microsoft.com/en-us/windows/win32/fileio/filesystem-functionality-comparison)). 해당 환경에서 공식 승격을 실행하지 않으며 fallback으로 원본을 덮어쓰지 않습니다.
 
 ## 삭제 후보 — 사용자 검토 전 보존
 
@@ -73,25 +73,58 @@ $Stage = 'C:\Dev\GitHub\07_eml-viewer\build\release-staging\<해당 signed stagi
 .\scripts\VerifySignatures.ps1 -Directory "$Stage\artifacts" -CertificateThumbprint $env:SIGN_CERT_THUMBPRINT
 ```
 
-- [ ] 격리된 실제 Windows에서 구버전 종료 안내/AppMutex 차단, 설치·업그레이드·실패/취소·제거·UserSetting 보존, 이메일 열람/첨부/번역/전달·구버전 업데이트를 확인합니다. 종료 안내를 자동 정상 종료 성공으로 표시하지 않습니다.
+- [ ] 격리된 실제 Windows에서 구버전 종료 안내/AppMutex 차단, 설치·업그레이드·실패/취소·제거·UserSetting 보존, 이메일 열람/첨부/번역/전달·구버전 업데이트를 확인합니다. 종료 안내를 자동 정상 종료 성공으로 표시하지 않습니다. 현재 설치 EXE의 컴파일 후 서명 외 SignedUninstaller 콜백은 없으므로 설치된 제거 프로그램의 서명/Windows 실행 정책을 별도로 확인합니다.
 - [ ] 같은 검수 commit의 원격 v<version> 태그와 세 파일을 확인합니다. 현재 안전 게시 wrapper는 없으므로 다음은 사용자가 실제 게이트 후 실행할 draft 게시 절차입니다. 기존 동일 태그가 있으면 자동 재생성/덮어쓰기를 하지 않습니다.
 
 ```powershell
 $Tag = "v$Version"
+$Repo = 'KwangBeomPark/07_eml-viewer'
+$ErrorActionPreference = 'Stop'
+$Origin = (git remote get-url origin).Trim()
+if ($LASTEXITCODE -ne 0 -or $Origin -notin @("https://github.com/$Repo.git", "git@github.com:$Repo.git")) { throw 'Unexpected origin repository.' }
+$Status = @(git status --porcelain)
+if ($LASTEXITCODE -ne 0 -or $Status.Count) { throw 'Use the approved clean source.' }
+$Branch = (git branch --show-current).Trim()
+if ($LASTEXITCODE -ne 0 -or $Branch -ne 'main') { throw 'Use the approved main branch.' }
+$Commit = (git rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $Commit -notmatch '^[0-9a-f]{40}$') { throw 'Cannot resolve source commit.' }
+$Receipt = Get-Content -LiteralPath (Join-Path $Stage 'receipt.json') -Raw | ConvertFrom-Json
+if ($Receipt.source.commit -ne $Commit -or $Receipt.source.dirty) { throw 'Signed staging differs from the approved clean source.' }
+$RemoteRef = gh api "repos/$Repo/git/ref/tags/$Tag" | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) { throw 'Prepare the reviewed remote tag first; do not move an old tag.' }
+$Object = $RemoteRef.object
+while ($Object.type -eq 'tag') {
+  $TagObject = gh api "repos/$Repo/git/tags/$($Object.sha)" | ConvertFrom-Json
+  if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve annotated remote tag.' }
+  $Object = $TagObject.object
+}
+if ($Object.type -ne 'commit' -or $Object.sha -ne $Commit) { throw 'Remote tag differs from the signed source commit.' }
 $Files = @(
   "release\App07_EmlViewer_Setup_v$Version.exe",
   "release\App07_EmlViewer_v$Version-manifest.json",
   "release\App07_EmlViewer_v$Version-SHA256SUMS.txt"
 )
-gh release create $Tag @Files --verify-tag --draft --title "EML Viewer $Tag" --generate-notes
+gh release create $Tag @Files --repo $Repo --verify-tag --draft --title "EML Viewer $Tag" --generate-notes
+if ($LASTEXITCODE -ne 0) { throw 'Draft creation failed; existing assets were not overwritten.' }
 ```
 
 - [ ] draft의 세 파일을 새 빈 폴더에 다운로드하고 이름/개수·크기·SHA-256·서명을 로컬 검증 세트와 대조합니다. 실제 설치 합격 로그와 사용자 최종 검토가 끝난 뒤만 공개합니다.
 
 ```powershell
-gh release download $Tag --dir '<새 검사 폴더>'
+$DownloadRoot = Join-Path $PWD ('build\remote-check-' + [guid]::NewGuid().ToString('N'))
+gh release download $Tag --repo $Repo --dir $DownloadRoot
+if ($LASTEXITCODE -ne 0) { throw 'Cannot download the draft.' }
+$ExpectedNames = @($Files | ForEach-Object { Split-Path -Leaf $_ })
+if (@(Compare-Object ($ExpectedNames | Sort-Object) (@(Get-ChildItem -LiteralPath $DownloadRoot -File).Name | Sort-Object)).Count) { throw 'Unexpected remote asset set.' }
+foreach ($File in $Files) {
+  if ((Get-FileHash -LiteralPath $File).Hash -ne (Get-FileHash -LiteralPath (Join-Path $DownloadRoot (Split-Path -Leaf $File))).Hash) { throw 'Remote bytes differ from the verified local set.' }
+}
+.\.venv\Scripts\python.exe .\scripts\release_artifacts.py verify --stage $Stage --release $DownloadRoot --version $Version
+if ($LASTEXITCODE -ne 0) { throw 'Downloaded provenance verification failed.' }
+.\scripts\VerifySignatures.ps1 -Directory $DownloadRoot -CertificateThumbprint $env:SIGN_CERT_THUMBPRINT
 # 위 검증과 실제 설치 합격 후 사용자가 공개
-gh release edit $Tag --draft=false --verify-tag
+gh release edit $Tag --repo $Repo --draft=false --verify-tag --latest
+if ($LASTEXITCODE -ne 0) { throw 'Publication failed; do not report completion.' }
 ```
 
 - [ ] 공개 후 다시 다운로드/서명·해시를 확인합니다. 과거 태그/자산·generic 장부를 삭제하거나 --clobber로 교체하지 않습니다.
@@ -100,4 +133,6 @@ gh release edit $Tag --draft=false --verify-tag
 
 ## Gemini/검수 경계
 
-10월 8일 06/07 공동 Gemini High 요청은 45초 print timeout·빈 response·0토큰으로 미완료였습니다(conversation 730c5bb8-a9e5-42c9-9012-120e6493c40a). 이번 문서는 현재 코드·CLI 도움말·파일 목록의 10월 9일 독립 읽기 검수입니다. 실제 서명·설치·게시를 실행하거나 완료로 표시하지 않았습니다.
+10월 8일 빈 response·0토큰 요청은 미완료였습니다. 이번 10월 9일 06/07 공동 Gemini 3.8 Flash High/effort high 계약 검토는 **54.54초, 내용 있는 SUCCESS**, conversation `229c6169-5f07-48fe-8bcc-251b0cebcf51`입니다. 응답 근거는 06 `build/standardization/release-ready-18726ede62c44a229e5257b67ab08b66/agy-contract-review.json`에 보존합니다. 경합·권한 검수를 반영했으며 목적지와 같은 폴더의 임시 파일에 교차 볼륨 우려를 적용하지 않았습니다. CLI 보고 28,407토큰이며 크레딧 차감은 미확인입니다.
+
+이번 미서명 전체 PyInstaller/Inno 빌드는 `build/release-staging/5b5c6a4ad80547ada95e15457c8e0afc`입니다. 설치 기본 버전·최종 runtime 소스까지 다시 빌드했고 **exit 0, sourceStable=true, sourceDirty=true, officialPromoted=false**입니다. 최신 로그 `build/standardization/signing-preparation-final-build.log`, 요약 `build/standardization/signing-preparation-final-result.json`, 전체 pytest 로그 `build/standardization/signing-preparation-pytest.log`에 보존합니다. 현재 변경은 미커밋이므로 승인 커밋 후 새 빌드·테스트·서명을 다시 해야 합니다. 실제 서명·설치·게시 성공은 표시하지 않습니다.
