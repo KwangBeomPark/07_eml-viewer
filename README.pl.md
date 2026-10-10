@@ -1,4 +1,4 @@
-﻿*Przeczytaj w innych językach: [English](README.md), [한국어](README.ko.md), [Polski](README.pl.md)*
+*Przeczytaj w innych językach: [English](README.md), [한국어](README.ko.md), [Polski](README.pl.md)*
 
 # 🔍 EML Viewer: Przeglądarka dowodowej poczty e-mail i wygodne przesyłanie dalej
 
@@ -8,9 +8,9 @@
 
 > **Wygodny podgląd dowodów e-mail · Swobodne skalowanie okna · Proste sprawdzanie załączników i przesyłanie dalej**
 
-**EML Viewer** to aplikacja desktopowa stworzona z myślą o wygodnym przeglądaniu i przekazywaniu plików wiadomości e-mail w formatach .eml oraz Outlook .msg zachowanych jako dokumentacja dowodowa.
+**EML Viewer** to samodzielna aplikacja desktopowa stworzona do bezpiecznego i wygodnego przeglądania oraz weryfikacji plików wiadomości e-mail (.eml i Outlook .msg) stanowiących dokumentację dowodową.
 
-W pracy operacyjnej i finansowej pracownicy często weryfikują zarchiwizowane maile potwierdzające ustalenia lub przesyłają je do innych osób. Program eliminuje niedogodności domyślnych narzędzi biurowych, oferując swobodne dopasowanie rozmiaru okna, bezbłędne renderowanie treści HTML i obrazów oraz intuicyjną obsługę załączników i przesyłania dalej.
+W operacjach finansowych, kontrolach podatkowych i audytach umów pracownicy regularnie weryfikują zarchiwizowane wiadomości e-mail potwierdzające transakcje. Program działa niezależnie od pakietu Office, oferuje pełną elastyczność rozmiaru okna, wierne renderowanie HTML/obrazów przez Qt WebEngine oraz bezpieczną obsługę załączników i przesyłania dalej.
 
 ## Główne funkcje
 
