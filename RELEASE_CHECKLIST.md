@@ -112,6 +112,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Draft creation failed; existing assets were no
 
 ```powershell
 $DownloadRoot = Join-Path $PWD ('build\remote-check-' + [guid]::NewGuid().ToString('N'))
+$DraftIdentity = gh release view $Tag --repo $Repo --json apiUrl | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $DraftIdentity.apiUrl -notmatch ("^https://api\.github\.com/repos/" + [regex]::Escape($Repo) + "/releases/[0-9]+$")) { throw 'Cannot resolve the expected draft release.' }
+$RemoteRelease = gh api $DraftIdentity.apiUrl | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $RemoteRelease.tag_name -cne $Tag -or $RemoteRelease.draft -ne $true -or $RemoteRelease.prerelease -ne $false -or @($RemoteRelease.assets).Count -ne 3 -or @($RemoteRelease.assets | Where-Object { $_.state -ne 'uploaded' }).Count) { throw 'Unexpected draft identity or upload state; publication is blocked.' }
 gh release download $Tag --repo $Repo --dir $DownloadRoot
 if ($LASTEXITCODE -ne 0) { throw 'Cannot download the draft.' }
 $ExpectedNames = @($Files | ForEach-Object { Split-Path -Leaf $_ })
@@ -122,9 +126,16 @@ foreach ($File in $Files) {
 .\.venv\Scripts\python.exe .\scripts\release_artifacts.py verify --stage $Stage --release $DownloadRoot --version $Version
 if ($LASTEXITCODE -ne 0) { throw 'Downloaded provenance verification failed.' }
 .\scripts\VerifySignatures.ps1 -Directory $DownloadRoot -CertificateThumbprint $env:SIGN_CERT_THUMBPRINT
+if (-not $? -or $LASTEXITCODE -ne 0) { throw 'Downloaded signature verification failed; keep the draft.' }
 # 위 검증과 실제 설치 합격 후 사용자가 공개
 gh release edit $Tag --repo $Repo --draft=false --verify-tag --latest
 if ($LASTEXITCODE -ne 0) { throw 'Publication failed; do not report completion.' }
+$PublishedRelease = gh api "repos/$Repo/releases/tags/$Tag" | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $PublishedRelease.tag_name -cne $Tag -or $PublishedRelease.draft -ne $false -or $PublishedRelease.prerelease -ne $false -or @($PublishedRelease.assets).Count -ne 3) { throw 'Published release state could not be verified; preserve it for inspection.' }
+foreach ($File in $Files) {
+  $AssetMatches = @($PublishedRelease.assets | Where-Object { $_.name -ceq (Split-Path -Leaf $File) })
+  if ($AssetMatches.Count -ne 1 -or $AssetMatches[0].state -ne 'uploaded' -or $AssetMatches[0].size -ne (Get-Item -LiteralPath $File).Length -or $AssetMatches[0].digest -cne ('sha256:' + (Get-FileHash -LiteralPath $File).Hash.ToLowerInvariant())) { throw 'Published asset differs from the approved local set; do not overwrite it.' }
+}
 ```
 
 - [ ] 공개 후 다시 다운로드/서명·해시를 확인합니다. 과거 태그/자산·generic 장부를 삭제하거나 --clobber로 교체하지 않습니다.

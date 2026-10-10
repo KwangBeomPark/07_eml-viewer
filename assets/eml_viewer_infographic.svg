@@ -1,0 +1,313 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" width="100%" height="100%" style="background:#090d16;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <defs>
+    <radialGradient id="ev-glow-cyan" cx="15%" cy="25%" r="40%">
+      <stop offset="0%" stop-color="#06b6d4" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#06b6d4" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="ev-glow-purple" cx="50%" cy="30%" r="50%">
+      <stop offset="0%" stop-color="#8b5cf6" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#8b5cf6" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="ev-glow-blue" cx="85%" cy="30%" r="40%">
+      <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#3b82f6" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="card-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#141c2e" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#0e1422" stop-opacity="0.95"/>
+    </linearGradient>
+    <linearGradient id="subcard-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#19233a" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#101827" stop-opacity="0.9"/>
+    </linearGradient>
+
+    <linearGradient id="border-cyan" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#06b6d4" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#0891b2" stop-opacity="0.3"/>
+    </linearGradient>
+    <linearGradient id="border-purple" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a855f7" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#6366f1" stop-opacity="0.4"/>
+    </linearGradient>
+    <linearGradient id="border-blue" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#1d4ed8" stop-opacity="0.3"/>
+    </linearGradient>
+    <linearGradient id="border-green" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#059669" stop-opacity="0.4"/>
+    </linearGradient>
+
+    <marker id="ev-arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#38bdf8"/>
+    </marker>
+    <marker id="ev-arrow-purple" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#a855f7"/>
+    </marker>
+  </defs>
+
+  <!-- Background Base -->
+  <rect width="1200" height="675" fill="#090d16"/>
+  <rect width="1200" height="675" fill="url(#ev-glow-cyan)"/>
+  <rect width="1200" height="675" fill="url(#ev-glow-purple)"/>
+  <rect width="1200" height="675" fill="url(#ev-glow-blue)"/>
+
+  <!-- Grid Lines -->
+  <g stroke="#1f293d" stroke-width="0.5" opacity="0.4">
+    <line x1="0" y1="90" x2="1200" y2="90"/>
+    <line x1="0" y1="630" x2="1200" y2="630"/>
+    <line x1="265" y1="90" x2="265" y2="630" stroke-dasharray="4 4"/>
+    <line x1="720" y1="90" x2="720" y2="630" stroke-dasharray="4 4"/>
+    <line x1="970" y1="90" x2="970" y2="630" stroke-dasharray="4 4"/>
+  </g>
+
+  <!-- ==================== HEADER ==================== -->
+  <g transform="translate(40, 28)">
+    <rect x="0" y="0" width="195" height="22" rx="11" fill="#3b82f6" fill-opacity="0.15" stroke="#3b82f6" stroke-width="0.8"/>
+    <text x="97" y="15" fill="#60a5fa" font-size="10.5" font-weight="700" letter-spacing="1.2" text-anchor="middle">OFFLINE EMAIL VIEWER</text>
+    
+    <text x="0" y="46" fill="#ffffff" font-size="22" font-weight="800" letter-spacing="-0.5">
+      EML Viewer <tspan fill="#94a3b8" font-size="16" font-weight="500">(Comfortable Mail Evidence &amp; Attachment Forwarding)</tspan>
+    </text>
+    <text x="750" y="38" fill="#64748b" font-size="12" font-weight="500" text-anchor="end">
+      High-Fidelity Qt WebEngine Isolated Pipeline &amp; RFC/MAPI Parser
+    </text>
+  </g>
+
+  <!-- ==================== STAGE 1: INPUT MESSAGES ==================== -->
+  <g transform="translate(40, 105)">
+    <rect width="210" height="515" rx="14" fill="url(#card-grad)" stroke="url(#border-cyan)" stroke-width="1.2"/>
+    
+    <rect x="14" y="14" width="70" height="18" rx="9" fill="#06b6d4" fill-opacity="0.2"/>
+    <text x="49" y="27" fill="#22d3ee" font-size="9.5" font-weight="800" text-anchor="middle">STAGE 1</text>
+    <text x="14" y="52" fill="#f8fafc" font-size="15" font-weight="700">INPUT MESSAGES</text>
+    <text x="14" y="68" fill="#64748b" font-size="10.5">Raw Mail Files &amp; Storage</text>
+
+    <!-- Item 1: Standard EML -->
+    <g transform="translate(14, 85)">
+      <rect width="182" height="68" rx="9" fill="url(#subcard-grad)" stroke="#1e293b" stroke-width="1"/>
+      <circle cx="24" cy="24" r="12" fill="#06b6d4" fill-opacity="0.15"/>
+      <text x="24" y="28" fill="#22d3ee" font-size="11" font-weight="700" text-anchor="middle">✉️</text>
+      <text x="44" y="24" fill="#f1f5f9" font-size="12" font-weight="600">RFC 822 (.eml)</text>
+      <text x="44" y="40" fill="#94a3b8" font-size="10">Standard MIME Streams</text>
+      <text x="44" y="54" fill="#64748b" font-size="9.5">Universal cross-client format</text>
+    </g>
+
+    <!-- Item 2: Outlook MSG -->
+    <g transform="translate(14, 163)">
+      <rect width="182" height="68" rx="9" fill="url(#subcard-grad)" stroke="#1e293b" stroke-width="1"/>
+      <circle cx="24" cy="24" r="12" fill="#3b82f6" fill-opacity="0.15"/>
+      <text x="24" y="28" fill="#60a5fa" font-size="11" font-weight="700" text-anchor="middle">📫</text>
+      <text x="44" y="24" fill="#f1f5f9" font-size="12" font-weight="600">Outlook MAPI (.msg)</text>
+      <text x="44" y="40" fill="#94a3b8" font-size="10">Compound Binary File</text>
+      <text x="44" y="54" fill="#64748b" font-size="9.5">Native Microsoft message stream</text>
+    </g>
+
+    <!-- Item 3: S/MIME & Signatures -->
+    <g transform="translate(14, 241)">
+      <rect width="182" height="68" rx="9" fill="url(#subcard-grad)" stroke="#1e293b" stroke-width="1"/>
+      <circle cx="24" cy="24" r="12" fill="#8b5cf6" fill-opacity="0.15"/>
+      <text x="24" y="28" fill="#c084fc" font-size="11" font-weight="700" text-anchor="middle">🔏</text>
+      <text x="44" y="24" fill="#f1f5f9" font-size="12" font-weight="600">Signed &amp; Multipart</text>
+      <text x="44" y="40" fill="#94a3b8" font-size="10">Multi-boundary Payloads</text>
+      <text x="44" y="54" fill="#64748b" font-size="9.5">Preserves security metadata</text>
+    </g>
+
+    <!-- Item 4: Attachments -->
+    <g transform="translate(14, 319)">
+      <rect width="182" height="68" rx="9" fill="url(#subcard-grad)" stroke="#1e293b" stroke-width="1"/>
+      <circle cx="24" cy="24" r="12" fill="#10b981" fill-opacity="0.15"/>
+      <text x="24" y="28" fill="#34d399" font-size="11" font-weight="700" text-anchor="middle">📎</text>
+      <text x="44" y="24" fill="#f1f5f9" font-size="12" font-weight="600">Embedded Attachments</text>
+      <text x="44" y="40" fill="#94a3b8" font-size="10">PDF, Excel, Images, ZIP</text>
+      <text x="44" y="54" fill="#64748b" font-size="9.5">Base64 encoded binary data</text>
+    </g>
+
+    <!-- Bottom Status Note -->
+    <rect x="14" y="450" width="182" height="48" rx="7" fill="#042f2e" fill-opacity="0.5" stroke="#0d9488" stroke-width="0.8"/>
+    <text x="24" y="468" fill="#2dd4bf" font-size="10" font-weight="700">🔒 100% Read-Only Safety</text>
+    <text x="24" y="484" fill="#99f6e4" font-size="9">Source mail files never altered or locked</text>
+  </g>
+
+  <!-- Flow Connector 1 -> 2 -->
+  <path d="M 252 355 L 282 355" stroke="#06b6d4" stroke-width="2.5" marker-end="url(#ev-arrow)"/>
+
+  <!-- ==================== STAGE 2: ISOLATED RENDERING & PARSER ENGINE ==================== -->
+  <g transform="translate(285, 105)">
+    <rect width="430" height="515" rx="14" fill="url(#card-grad)" stroke="url(#border-purple)" stroke-width="1.4"/>
+    
+    <rect x="18" y="14" width="70" height="18" rx="9" fill="#8b5cf6" fill-opacity="0.2"/>
+    <text x="53" y="27" fill="#c084fc" font-size="9.5" font-weight="800" text-anchor="middle">STAGE 2</text>
+    <text x="18" y="52" fill="#f8fafc" font-size="15" font-weight="700">ISOLATED RENDERING &amp; PARSER ENGINE</text>
+    <text x="18" y="68" fill="#64748b" font-size="10.5">Sandboxed Chromium WebEngine &amp; RFC/MAPI Decoder</text>
+
+    <!-- Top Decoder Core -->
+    <g transform="translate(18, 85)">
+      <rect width="394" height="66" rx="9" fill="#1e1b4b" fill-opacity="0.6" stroke="#6366f1" stroke-width="1.2"/>
+      <text x="16" y="26" fill="#a5b4fc" font-size="12.5" font-weight="700">🛡️ Dual RFC 822 &amp; Outlook MAPI Parser Core</text>
+      <text x="16" y="44" fill="#cbd5e1" font-size="10.5">Decodes Headers • Traverses Nested MIME Boundaries • Extracts Embedded CID Maps</text>
+      <text x="16" y="57" fill="#818cf8" font-size="9.5">Pure Python &amp; native C-level extraction without requiring Microsoft Outlook installed</text>
+    </g>
+
+    <!-- Dual Subsystem Cards -->
+    <g transform="translate(18, 163)">
+      <!-- Left: Chromium Sandbox -->
+      <rect width="190" height="96" rx="9" fill="url(#subcard-grad)" stroke="#312e81" stroke-width="1"/>
+      <rect x="12" y="12" width="22" height="22" rx="4" fill="#8b5cf6" fill-opacity="0.2"/>
+      <text x="23" y="27" fill="#c084fc" font-size="12" font-weight="700" text-anchor="middle">🌐</text>
+      <text x="42" y="24" fill="#f8fafc" font-size="12" font-weight="600">Qt WebEngine</text>
+      <text x="42" y="38" fill="#94a3b8" font-size="10">Chromium Sandboxing</text>
+      <text x="12" y="58" fill="#cbd5e1" font-size="9.5">• JS Execution Disabled</text>
+      <text x="12" y="72" fill="#cbd5e1" font-size="9.5">• External track pixel block</text>
+      <text x="12" y="86" fill="#a78bfa" font-size="9">Full CSS3 / flexbox support</text>
+
+      <!-- Right: CID Image Resolver -->
+      <g transform="translate(204, 0)">
+        <rect width="190" height="96" rx="9" fill="url(#subcard-grad)" stroke="#1e3a8a" stroke-width="1"/>
+        <rect x="12" y="12" width="22" height="22" rx="4" fill="#3b82f6" fill-opacity="0.2"/>
+        <text x="23" y="27" fill="#60a5fa" font-size="12" font-weight="700" text-anchor="middle">🖼️</text>
+        <text x="42" y="24" fill="#f8fafc" font-size="12" font-weight="600">CID Image Resolver</text>
+        <text x="42" y="38" fill="#94a3b8" font-size="10">Inline Image Injection</text>
+        <text x="12" y="58" fill="#cbd5e1" font-size="9.5">• Resolves cid: references</text>
+        <text x="12" y="72" fill="#cbd5e1" font-size="9.5">• In-memory data: URI bridge</text>
+        <text x="12" y="86" fill="#93c5fd" font-size="9">Zero broken image icons</text>
+      </g>
+    </g>
+
+    <!-- Search & Indexer Core -->
+    <g transform="translate(18, 271)">
+      <rect width="394" height="60" rx="9" fill="url(#subcard-grad)" stroke="#374151" stroke-width="1"/>
+      <circle cx="26" cy="30" r="12" fill="#ec4899" fill-opacity="0.15"/>
+      <text x="26" y="34" fill="#f472b6" font-size="11" font-weight="700" text-anchor="middle">🔍</text>
+      <text x="46" y="26" fill="#f8fafc" font-size="12" font-weight="600">Deep-Text Search &amp; Indexing Engine</text>
+      <text x="46" y="42" fill="#94a3b8" font-size="10">Instant keyword search across subject, sender, HTML body &amp; attachment names</text>
+      <text x="46" y="54" fill="#64748b" font-size="9">In-page yellow highlighting with instant jumping between matched occurrences</text>
+    </g>
+
+    <!-- Vector PDF Print Engine -->
+    <g transform="translate(18, 343)">
+      <rect width="394" height="88" rx="9" fill="url(#subcard-grad)" stroke="#4338ca" stroke-width="1"/>
+      <rect x="14" y="14" width="22" height="22" rx="4" fill="#6366f1" fill-opacity="0.2"/>
+      <text x="25" y="29" fill="#a5b4fc" font-size="12" font-weight="700" text-anchor="middle">🖨️</text>
+      <text x="46" y="26" fill="#f8fafc" font-size="12" font-weight="600">Vector-Quality PDF Archival Exporter</text>
+      <text x="46" y="42" fill="#94a3b8" font-size="10.5">• High-DPI headless Chromium PDF printing engine with exact pagination</text>
+      <text x="46" y="58" fill="#94a3b8" font-size="10.5">• Injects standardized audit header (Received date, Message ID, Sender verification)</text>
+      <text x="46" y="74" fill="#94a3b8" font-size="10.5">• Generates legal-compliance archive documents suitable for court or audit evidence</text>
+    </g>
+
+    <!-- Bottom Engine Status -->
+    <rect x="18" y="445" width="394" height="53" rx="7" fill="#1e1b4b" fill-opacity="0.5" stroke="#4f46e5" stroke-width="0.8"/>
+    <text x="30" y="466" fill="#a5b4fc" font-size="10.5" font-weight="700">🔒 Enterprise Security Isolation</text>
+    <text x="30" y="483" fill="#cbd5e1" font-size="9.5">Phishing links and tracking beacons blocked by default — 100% safe inspection</text>
+  </g>
+
+  <!-- Flow Connector 2 -> 3 -->
+  <path d="M 717 355 L 747 355" stroke="#a855f7" stroke-width="2.5" marker-end="url(#ev-arrow-purple)"/>
+
+  <!-- ==================== STAGE 3: OUTPUTS ==================== -->
+  <g transform="translate(750, 105)">
+    <rect width="210" height="515" rx="14" fill="url(#card-grad)" stroke="url(#border-blue)" stroke-width="1.2"/>
+    
+    <rect x="14" y="14" width="70" height="18" rx="9" fill="#3b82f6" fill-opacity="0.2"/>
+    <text x="49" y="27" fill="#60a5fa" font-size="9.5" font-weight="800" text-anchor="middle">STAGE 3</text>
+    <text x="14" y="52" fill="#f8fafc" font-size="15" font-weight="700">SECURE OUTPUTS</text>
+    <text x="14" y="68" fill="#64748b" font-size="10.5">User Workspace Deliverables</text>
+
+    <!-- Item 1: High Fidelity View -->
+    <g transform="translate(14, 85)">
+      <rect width="182" height="68" rx="9" fill="url(#subcard-grad)" stroke="#1e293b" stroke-width="1"/>
+      <circle cx="24" cy="24" r="12" fill="#3b82f6" fill-opacity="0.15"/>
+      <text x="24" y="28" fill="#60a5fa" font-size="11" font-weight="700" text-anchor="middle">🖥️</text>
+      <text x="44" y="24" fill="#f1f5f9" font-size="12" font-weight="600">Pixel-Perfect View</text>
+      <text x="44" y="40" fill="#94a3b8" font-size="10">Native Windows Window</text>
+      <text x="44" y="54" fill="#64748b" font-size="9.5">Matches Outlook render exactly</text>
+    </g>
+
+    <!-- Item 2: Attachment Extract -->
+    <g transform="translate(14, 163)">
+      <rect width="182" height="68" rx="9" fill="url(#subcard-grad)" stroke="#1e293b" stroke-width="1"/>
+      <circle cx="24" cy="24" r="12" fill="#10b981" fill-opacity="0.15"/>
+      <text x="24" y="28" fill="#34d399" font-size="11" font-weight="700" text-anchor="middle">💾</text>
+      <text x="44" y="24" fill="#f1f5f9" font-size="12" font-weight="600">1-Click Attachment</text>
+      <text x="44" y="40" fill="#94a3b8" font-size="10">Safe Disk Extraction</text>
+      <text x="44" y="54" fill="#64748b" font-size="9.5">Inspect files without opening</text>
+    </g>
+
+    <!-- Item 3: Vector PDF -->
+    <g transform="translate(14, 241)">
+      <rect width="182" height="68" rx="9" fill="url(#subcard-grad)" stroke="#1e293b" stroke-width="1"/>
+      <circle cx="24" cy="24" r="12" fill="#ef4444" fill-opacity="0.15"/>
+      <text x="24" y="28" fill="#f87171" font-size="11" font-weight="700" text-anchor="middle">📄</text>
+      <text x="44" y="24" fill="#f1f5f9" font-size="12" font-weight="600">Vector PDF Export</text>
+      <text x="44" y="40" fill="#94a3b8" font-size="10">Print-Ready Document</text>
+      <text x="44" y="54" fill="#64748b" font-size="9.5">Perfect for legal/audit storage</text>
+    </g>
+
+    <!-- Item 4: Header Inspector -->
+    <g transform="translate(14, 319)">
+      <rect width="182" height="68" rx="9" fill="url(#subcard-grad)" stroke="#1e293b" stroke-width="1"/>
+      <circle cx="24" cy="24" r="12" fill="#f59e0b" fill-opacity="0.15"/>
+      <text x="24" y="28" fill="#fbbf24" font-size="11" font-weight="700" text-anchor="middle">🔬</text>
+      <text x="44" y="24" fill="#f1f5f9" font-size="12" font-weight="600">Header Inspection</text>
+      <text x="44" y="40" fill="#94a3b8" font-size="10">DKIM / SPF / IP Origin</text>
+      <text x="44" y="54" fill="#64748b" font-size="9.5">Raw mail envelope analysis</text>
+    </g>
+
+    <!-- Bottom Output Status -->
+    <rect x="14" y="450" width="182" height="48" rx="7" fill="#1e293b" fill-opacity="0.5" stroke="#334155" stroke-width="0.8"/>
+    <text x="24" y="468" fill="#94a3b8" font-size="10" font-weight="700">⚡ Instant File Open</text>
+    <text x="24" y="484" fill="#cbd5e1" font-size="9">Responsive viewer for mail evidence</text>
+  </g>
+
+  <!-- Flow Connector 3 -> 4 -->
+  <path d="M 962 355 L 987 355" stroke="#3b82f6" stroke-width="2.5" marker-end="url(#ev-arrow)"/>
+
+  <!-- ==================== STAGE 4: KEY BUSINESS VALUE ==================== -->
+  <g transform="translate(990, 105)">
+    <rect width="170" height="515" rx="14" fill="url(#card-grad)" stroke="url(#border-green)" stroke-width="1.2"/>
+    
+    <rect x="12" y="14" width="70" height="18" rx="9" fill="#10b981" fill-opacity="0.2"/>
+    <text x="47" y="27" fill="#34d399" font-size="9.5" font-weight="800" text-anchor="middle">STAGE 4</text>
+    <text x="12" y="52" fill="#f8fafc" font-size="13.5" font-weight="700">BUSINESS VALUE</text>
+    <text x="12" y="68" fill="#64748b" font-size="10">Recruiter Highlights</text>
+
+    <!-- Metric 1: Flexible UI -->
+    <g transform="translate(12, 85)">
+      <rect width="146" height="88" rx="9" fill="url(#subcard-grad)" stroke="#065f46" stroke-width="1"/>
+      <text x="14" y="32" fill="#34d399" font-size="20" font-weight="800">Flexible UI</text>
+      <text x="14" y="50" fill="#f1f5f9" font-size="11" font-weight="600">Free Resizing</text>
+      <text x="14" y="66" fill="#94a3b8" font-size="9.5">Smooth window adjustment</text>
+    </g>
+
+    <!-- Metric 2: Easy Forward -->
+    <g transform="translate(12, 185)">
+      <rect width="146" height="88" rx="9" fill="url(#subcard-grad)" stroke="#065f46" stroke-width="1"/>
+      <text x="14" y="32" fill="#34d399" font-size="20" font-weight="800">Easy Forward</text>
+      <text x="14" y="50" fill="#f1f5f9" font-size="11" font-weight="600">Clean Forwarding</text>
+      <text x="14" y="66" fill="#94a3b8" font-size="9.5">Convenient attachment pass</text>
+    </g>
+
+    <!-- Metric 3: Dual Format -->
+    <g transform="translate(12, 285)">
+      <rect width="146" height="88" rx="9" fill="url(#subcard-grad)" stroke="#065f46" stroke-width="1"/>
+      <text x="14" y="32" fill="#34d399" font-size="20" font-weight="800">Dual Format</text>
+      <text x="14" y="50" fill="#f1f5f9" font-size="11" font-weight="600">EML &amp; MSG Support</text>
+      <text x="14" y="66" fill="#94a3b8" font-size="9.5">Seamless offline inspection</text>
+    </g>
+
+    <!-- Metric 4: Faithful View -->
+    <g transform="translate(12, 385)">
+      <rect width="146" height="88" rx="9" fill="url(#subcard-grad)" stroke="#065f46" stroke-width="1"/>
+      <text x="14" y="32" fill="#34d399" font-size="20" font-weight="800">Faithful View</text>
+      <text x="14" y="50" fill="#f1f5f9" font-size="11" font-weight="600">Accurate Body Layout</text>
+      <text x="14" y="66" fill="#94a3b8" font-size="9.5">Clean HTML &amp; PDF export</text>
+    </g>
+
+    <!-- Tech Stack Pill -->
+    <g transform="translate(12, 485)">
+      <rect width="146" height="20" rx="5" fill="#1e293b"/>
+      <text x="73" y="14" fill="#94a3b8" font-size="9" font-weight="600" text-anchor="middle">PySide6 • WebEngine • MAPI</text>
+    </g>
+  </g>
+</svg>

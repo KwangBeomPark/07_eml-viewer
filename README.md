@@ -1,14 +1,16 @@
-# EML Viewer
+﻿*Read this in other languages: [English](README.md), [한국어](README.ko.md), [Polski](README.pl.md)*
 
-English | [한국어](README.ko.md)
+# 🔍 EML Viewer: Practical Email Evidence Viewer & Forwarding Tool
 
-EML Viewer is a Windows-first desktop app for opening `.eml` and Outlook `.msg` email files with a layout that behaves like a normal desktop window and renders HTML email bodies with Qt WebEngine.
+<p align="center">
+  <img src="assets/eml_viewer_infographic.svg" width="950" alt="EML Viewer Technical Architecture and Security Pipeline">
+</p>
 
-## Why This Exists
+> **Easy Evidence Inspection · Flexible Window Sizing · Seamless Attachment Handling & Forwarding**
 
-I started this project because the default email viewer I used at work did not behave well with Windows window snapping shortcuts such as `Win + Left` and `Win + Right`. What began as a small viewer for reading email files has gradually become a convenience-focused alternative to the default email reader: easier window handling, clearer metadata, readable plain text and HTML views, inline image rendering, and attachment saving.
+**EML Viewer** is a Windows desktop application built to inspect .eml and Outlook .msg email evidence files comfortably, offering a practical alternative to cumbersome default viewers.
 
-This is an open project. The documentation intentionally avoids company names, internal system names, real email content, and other confidential details.
+In audit, finance, and operations work, team members frequently reference saved email files as supporting evidence. Default corporate email tools often lack flexible window resizing and handle forwarded attachments awkwardly. EML Viewer provides clean desktop window behavior, renders HTML bodies with embedded images faithfully using Qt WebEngine, and makes checking attachments or forwarding messages to colleagues straightforward and convenient.
 
 ## Features
 
