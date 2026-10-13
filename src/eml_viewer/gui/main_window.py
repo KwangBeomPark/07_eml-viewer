@@ -9,7 +9,7 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import QRect, Qt, QUrl, QThread, Signal
+from PySide6.QtCore import QFileSystemWatcher, QEvent, QRect, Qt, QTimer, QUrl, QThread, Signal
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
@@ -20,9 +20,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QMenu,
     QProgressDialog,
     QPushButton,
+    QScrollArea,
     QSplitter,
+    QStackedWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -35,18 +39,64 @@ from eml_viewer.gui.message_widgets import MessageBodyWidget
 from eml_viewer.gui.metadata_widgets import CopyableLineEdit
 from eml_viewer.gui.settings_dialog import SettingsDialog
 from eml_viewer.gui.theme import apply_theme
+from eml_viewer.gui.ui_helpers import ElidedLabel, display_safe_text, printer_icon, safe_tooltip
 from eml_viewer.models.attachment_data import AttachmentInfo
 from eml_viewer.models.email_data import ParsedEmail
-from eml_viewer.services.attachment_policy import DANGEROUS_EXTENSIONS, is_dangerous_extension
+from eml_viewer.services.attachment_policy import is_dangerous_extension
 from eml_viewer.services.attachment_service import AttachmentService
 from eml_viewer.services.eml_parser import EmlParser
 from eml_viewer.services.error_service import ErrorService
 from eml_viewer.services.file_operation_service import FileOperationService
+from eml_viewer.services.folder_navigation import FolderNavigationService
 from eml_viewer.services.forward_service import ForwardConfigError, ForwardService
 from eml_viewer.services.settings_service import SettingsService
 from eml_viewer.services.update_service import UpdateCheckResult, UpdateService
 
 logger = logging.getLogger(__name__)
+_orphaned_email_threads: set[QThread] = set()
+_orphaned_print_windows: set[object] = set()
+
+
+def _safe_message_lines(value: object) -> str:
+    """Render untrusted message text safely while retaining intentional line breaks."""
+    normalized = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(display_safe_text(line) for line in normalized.split("\n"))
+
+
+def _release_orphaned_email_thread(thread: QThread) -> None:
+    if thread not in _orphaned_email_threads:
+        return
+    _orphaned_email_threads.discard(thread)
+    thread.deleteLater()
+
+
+def _wait_for_orphaned_email_threads() -> None:
+    """Drain parser workers owned by standalone windows during application shutdown."""
+    for thread in list(_orphaned_email_threads):
+        if thread.isRunning():
+            thread.wait()
+        _release_orphaned_email_thread(thread)
+
+
+class EmailLoadThread(QThread):
+    """Parse one email without touching any Qt widgets."""
+
+    loaded = Signal(int, object, object)
+    failed = Signal(int, object)
+
+    def __init__(self, parser: EmlParser, request_id: int, path: str | Path) -> None:
+        super().__init__()
+        self._parser = parser
+        self._request_id = request_id
+        self._path = path
+
+    def run(self) -> None:
+        try:
+            result = self._parser.parse_file(self._path)
+        except Exception as exc:
+            self.failed.emit(self._request_id, exc)
+        else:
+            self.loaded.emit(self._request_id, self._path, result)
 
 
 class DownloadThread(QThread):
@@ -123,9 +173,25 @@ class MainWindow(QMainWindow):
         self._child_windows: list[MainWindow] = []
         self._current_email: ParsedEmail | None = None
         self._folder_emails: list[Path] = []
+        self._folder_navigation = FolderNavigationService()
+        self._folder_watcher = QFileSystemWatcher(self)
+        self._folder_watcher.directoryChanged.connect(self._on_folder_changed)
+        self._folder_change_timer = QTimer(self)
+        self._folder_change_timer.setSingleShot(True)
+        self._folder_change_timer.setInterval(200)
+        self._folder_change_timer.timeout.connect(self._refresh_folder_navigation_after_change)
         self._current_folder_index: int = -1
+        self._pending_navigation_index: int | None = None
+        self._pending_navigation_path: Path | None = None
+        self._pending_navigation_active = False
+        self._current_email_path: Path | None = None
         self._download_thread: DownloadThread | None = None
         self._update_check_thread: UpdateCheckThread | None = None
+        self._email_load_thread: EmailLoadThread | None = None
+        self._pending_email_load: tuple[int, str | Path] | None = None
+        self._email_load_request_id = 0
+        self._email_load_closed = False
+        self._close_event_started = False
         self._available_update_result: UpdateCheckResult | None = None
         self._session_temp_dir = Path(tempfile.mkdtemp(prefix="eml_temp_"))
         temp_dir_str = str(self._session_temp_dir)
@@ -143,9 +209,11 @@ class MainWindow(QMainWindow):
         self._forward_button = QPushButton(self)
         self._body_widget = MessageBodyWidget(self)
         self._attachment_panel = AttachmentPanel(self)
+        self._body_widget.print_busy_changed.connect(self._update_print_actions)
 
         self.setWindowTitle("EML Viewer")
         self._build_actions()
+        self._update_print_actions()
         self._build_ui()
         self._retranslate_ui()
         self._restore_window_geometry()
@@ -189,7 +257,7 @@ class MainWindow(QMainWindow):
             return
 
         event.acceptProposedAction()
-        self.load_email(valid_paths[0])
+        self.load_email_async(valid_paths[0])
 
         for remaining_path in valid_paths[1:]:
             if self._window_manager is not None and hasattr(self._window_manager, "create_window"):
@@ -204,9 +272,10 @@ class MainWindow(QMainWindow):
                     update_service=self._update_service,
                     auto_check_update=False,
                 )
+                win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
                 self._child_windows.append(win)
                 win.destroyed.connect(lambda checked=False, w=win: self._child_windows.remove(w) if w in self._child_windows else None)
-                win.load_email(remaining_path)
+                win.load_email_async(remaining_path)
                 win.show()
 
     def _build_actions(self) -> None:
@@ -247,11 +316,13 @@ class MainWindow(QMainWindow):
         self._view_source_action.triggered.connect(self._view_message_source)
 
         self._prev_email_action = QAction(self)
+        self._prev_email_action.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_ArrowBack))
         self._prev_email_action.setShortcut("Alt+Left")
         self._prev_email_action.triggered.connect(self._navigate_prev_email)
         self._prev_email_action.setEnabled(False)
 
         self._next_email_action = QAction(self)
+        self._next_email_action.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_ArrowForward))
         self._next_email_action.setShortcut("Alt+Right")
         self._next_email_action.triggered.connect(self._navigate_next_email)
         self._next_email_action.setEnabled(False)
@@ -304,21 +375,33 @@ class MainWindow(QMainWindow):
         self._help_menu.addAction(self._update_action)
 
         self._toolbar = self.addToolBar("")
+        self._toolbar.setObjectName("mainToolbar")
         self._toolbar.setMovable(False)
-        self._toolbar.addAction(self._new_window_action)
+        self._toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._open_action.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_DialogOpenButton))
+        self._save_as_action.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_DialogSaveButton))
+        self._export_pdf_action.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_FileIcon))
+        self._print_action.setIcon(
+            printer_icon(self.palette(), device_pixel_ratio=self.devicePixelRatioF())
+        )
         self._toolbar.addAction(self._open_action)
         self._toolbar.addAction(self._save_as_action)
         self._toolbar.addAction(self._export_pdf_action)
+        self._toolbar.addAction(self._print_action)
         self._toolbar.addSeparator()
         self._toolbar.addAction(self._prev_email_action)
         self._toolbar.addAction(self._next_email_action)
-        self._toolbar.addSeparator()
-        self._toolbar.addAction(self._open_browser_action)
-        self._toolbar.addAction(self._print_action)
 
     def _build_ui(self) -> None:
-        self._open_button = QPushButton(self)
-        self._open_button.clicked.connect(self._open_file)
+        # Retain the legacy label object for callers/tests, but the filename is
+        # displayed in the message summary and this standalone child must not float.
+        self._current_file_label.hide()
+        self._open_button = QToolButton(self)
+        self._open_button.setObjectName("actionPrimary")
+        self._open_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._open_button.setMinimumHeight(36)
+        self._open_button.setIcon(self._open_action.icon())
+        self._open_button.clicked.connect(self._open_action.trigger)
         self._forward_button.setEnabled(False)
 
         self._update_banner = QWidget(self)
@@ -336,12 +419,8 @@ class MainWindow(QMainWindow):
         update_banner_layout.addWidget(self._update_banner_close_button)
         self._update_banner.setVisible(False)
 
-        top_layout = QHBoxLayout()
-        top_layout.addWidget(self._open_button)
-        top_layout.addWidget(self._forward_button)
-        top_layout.addWidget(self._current_file_label, stretch=1)
-
         self._metadata_group = QGroupBox(self)
+        self._metadata_group.setObjectName("metadataDetails")
         metadata_layout = QFormLayout(self._metadata_group)
         self._subject_label = QLabel(self)
         self._sender_label = QLabel(self)
@@ -353,19 +432,91 @@ class MainWindow(QMainWindow):
         metadata_layout.addRow(self._to_label, self._to_edit)
         metadata_layout.addRow(self._cc_label, self._cc_edit)
         metadata_layout.addRow(self._date_label, self._date_edit)
+        self._metadata_group.setVisible(False)
+        self._metadata_scroll_area = QScrollArea(self)
+        self._metadata_scroll_area.setObjectName("metadataDetailsScrollArea")
+        self._metadata_scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._metadata_scroll_area.setWidgetResizable(True)
+        self._metadata_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._metadata_scroll_area.setMaximumHeight(132)
+        self._metadata_scroll_area.setWidget(self._metadata_group)
+        self._metadata_scroll_area.setVisible(False)
 
-        splitter = QSplitter(Qt.Orientation.Vertical, self)
-        splitter.addWidget(self._body_widget)
-        splitter.addWidget(self._attachment_panel)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 1)
+        self._subject_summary = QLabel(self)
+        self._subject_summary.setObjectName("messageSubject")
+        self._subject_summary.setTextFormat(Qt.TextFormat.PlainText)
+        self._subject_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse | Qt.TextInteractionFlag.TextSelectableByKeyboard)
+        self._subject_summary.setWordWrap(True)
+        self._subject_summary.setMaximumHeight(52)
+        self._subject_summary.setToolTip(safe_tooltip(""))
+        self._summary_meta = ElidedLabel(self)
+        self._summary_meta.setObjectName("secondaryText")
+        self._details_toggle = QToolButton(self)
+        self._details_toggle.setObjectName("metadataDetailsToggle")
+        self._details_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._details_toggle.setMinimumHeight(32)
+        self._details_toggle.setCheckable(True)
+        self._details_toggle.setChecked(False)
+        self._details_toggle.toggled.connect(self._set_details_visible)
+        self._header_copy_menu = self._subject_summary
+        self._subject_summary.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._subject_summary.customContextMenuRequested.connect(self._show_summary_copy_menu)
+        self._content_splitter = QSplitter(Qt.Orientation.Vertical, self)
+        self._content_splitter.addWidget(self._body_widget)
+        self._content_splitter.addWidget(self._attachment_panel)
+        self._content_splitter.setCollapsible(1, False)
+        self._content_splitter.setHandleWidth(0)
+        self._content_splitter.setStretchFactor(0, 3)
+        self._content_splitter.setStretchFactor(1, 1)
+
+        self._message_page = QWidget(self)
+        message_layout = QVBoxLayout(self._message_page)
+        message_layout.setContentsMargins(8, 4, 8, 4)
+        header_layout = QVBoxLayout()
+        summary_top = QHBoxLayout()
+        summary_top.addWidget(self._subject_summary, 1)
+        summary_top.addWidget(self._forward_button)
+        header_layout.addLayout(summary_top)
+        summary_bottom = QHBoxLayout()
+        summary_bottom.addWidget(self._summary_meta, 1)
+        summary_bottom.addWidget(self._details_toggle)
+        header_layout.addLayout(summary_bottom)
+        header_container = QWidget(self._message_page)
+        header_container.setObjectName("messageHeader")
+        header_container.setLayout(header_layout)
+        message_layout.addWidget(header_container)
+        message_layout.addWidget(self._metadata_scroll_area)
+        message_layout.addWidget(self._content_splitter, 1)
+
+        self._welcome_page = QWidget(self)
+        welcome_layout = QVBoxLayout(self._welcome_page)
+        welcome_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._welcome_icon = QLabel("✉", self._welcome_page)
+        self._welcome_icon.setObjectName("welcomeIcon")
+        self._welcome_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._welcome_heading = QLabel(self._welcome_page)
+        self._welcome_heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._welcome_heading.setObjectName("welcomeHeading")
+        self._welcome_button = self._open_button
+        self._welcome_button.setParent(self._welcome_page)
+        self._welcome_button.setAccessibleName(tr("welcome.open"))
+        self._welcome_hint = QLabel(self._welcome_page)
+        self._welcome_hint.setObjectName("welcomeHint")
+        self._welcome_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._welcome_loading = QLabel(self._welcome_page)
+        self._welcome_loading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        for widget in (self._welcome_icon, self._welcome_heading, self._welcome_button, self._welcome_hint, self._welcome_loading):
+            welcome_layout.addWidget(widget)
+        self._welcome_loading.hide()
+
+        self._content_stack = QStackedWidget(self)
+        self._content_stack.addWidget(self._welcome_page)
+        self._content_stack.addWidget(self._message_page)
+        self._content_stack.setCurrentWidget(self._welcome_page)
 
         content_layout = QVBoxLayout()
         content_layout.addWidget(self._update_banner)
-        content_layout.addLayout(top_layout)
-        content_layout.addWidget(self._metadata_group)
-        content_layout.addWidget(splitter, stretch=1)
-
+        content_layout.addWidget(self._content_stack, stretch=1)
 
         central_widget = QWidget(self)
         central_widget.setLayout(content_layout)
@@ -380,9 +531,12 @@ class MainWindow(QMainWindow):
         self._retranslate_ui()
 
     def _retranslate_ui(self) -> None:
+        self._print_action.setIcon(
+            printer_icon(self.palette(), device_pixel_ratio=self.devicePixelRatioF())
+        )
         self._new_window_action.setText(tr("action.new_window"))
         self._open_action.setText(tr("button.open_eml"))
-        self._save_as_action.setText(tr("action.save_as"))
+        self._save_as_action.setText(tr("action.save_email"))
         self._export_pdf_action.setText(tr("action.export_pdf"))
         self._open_browser_action.setText(tr("button.open_browser"))
         self._print_action.setText(tr("action.print"))
@@ -402,8 +556,29 @@ class MainWindow(QMainWindow):
         self._edit_menu.setTitle(tr("menu.edit"))
         self._help_menu.setTitle(tr("menu.help"))
         self._toolbar.setWindowTitle(tr("toolbar.main"))
-        self._open_button.setText(tr("button.open_eml"))
+        self._open_button.setText(tr("welcome.open"))
+        self._open_action.setIconText(tr("toolbar.open"))
+        self._open_action.setToolTip(tr("tooltip.open"))
+        self._save_as_action.setIconText(tr("toolbar.save_email"))
+        self._save_as_action.setToolTip(tr("tooltip.save_email"))
+        self._export_pdf_action.setIconText(tr("toolbar.pdf"))
+        self._export_pdf_action.setToolTip(tr("tooltip.pdf"))
+        self._print_action.setIconText(tr("toolbar.print"))
+        self._print_action.setToolTip(tr("tooltip.print"))
+        self._prev_email_action.setIconText("")
+        self._prev_email_action.setToolTip(tr("tooltip.prev_email"))
+        self._next_email_action.setIconText("")
+        self._next_email_action.setToolTip(tr("tooltip.next_email"))
+        for action in (self._prev_email_action, self._next_email_action):
+            button = self._toolbar.widgetForAction(action)
+            if isinstance(button, QToolButton):
+                button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self._forward_button.setText(tr("forward.current"))
+        self._welcome_heading.setText(tr("welcome.heading"))
+        self._welcome_hint.setText(tr("welcome.drop_hint"))
+        self._welcome_button.setAccessibleName(tr("welcome.open"))
+        self._details_toggle.setText(tr("metadata.details"))
+        self._details_toggle.setAccessibleName(tr("metadata.details"))
         self._update_banner_download_button.setText(tr("button.download"))
         self._update_banner_close_button.setText(tr("button.close"))
         self._metadata_group.setTitle(tr("label.metadata.group"))
@@ -447,10 +622,10 @@ class MainWindow(QMainWindow):
         for file_path in existing_files:
             path_obj = Path(file_path)
             display_name = f"{path_obj.parent.name}/{path_obj.name}" if path_obj.parent.name else path_obj.name
-            action = self._recent_files_menu.addAction(display_name)
-            action.setToolTip(file_path)
-            action.setStatusTip(file_path)
-            action.triggered.connect(lambda checked=False, p=file_path: self.load_email(p))
+            action = self._recent_files_menu.addAction(display_safe_text(display_name))
+            action.setToolTip(safe_tooltip(file_path))
+            action.setStatusTip(display_safe_text(file_path))
+            action.triggered.connect(lambda checked=False, p=file_path: self.load_email_async(p))
 
         self._recent_files_menu.addSeparator()
         clear_action = self._recent_files_menu.addAction(tr("menu.recent_clear"))
@@ -459,7 +634,7 @@ class MainWindow(QMainWindow):
     def _update_window_title(self) -> None:
         if self._current_email is not None:
             raw_subject = self._current_email.subject or ""
-            subject = re.sub(r"[\r\n\t]+", " ", raw_subject).strip()
+            subject = display_safe_text(re.sub(r"[\r\n\t]+", " ", raw_subject)).strip()
             display_subject = subject if subject else tr("app.untitled_subject")
             self.setWindowTitle(f"{display_subject} - EML Viewer")
         else:
@@ -469,9 +644,17 @@ class MainWindow(QMainWindow):
         path = dialogs.select_eml_file(self)
         if path is None:
             return
-        self.load_email(path)
+        self.load_email_async(path)
 
     def load_email(self, path: str | Path) -> None:
+        """Synchronously parse and display an email for compatibility callers."""
+        if self._email_load_closed:
+            return
+        self._email_load_request_id += 1
+        self._pending_email_load = None
+        self._pending_navigation_index = None
+        self._pending_navigation_path = None
+        self._pending_navigation_active = False
         try:
             parsed_email = self._parser.parse_file(path)
         except Exception as exc:
@@ -479,6 +662,7 @@ class MainWindow(QMainWindow):
             return
 
         self._display_email(parsed_email)
+        self._current_email_path = Path(path)
         self.statusBar().showMessage(tr("status.file_opened", source_path=parsed_email.source_path), 5000)
         try:
             self._settings_service.add_recent_file(path)
@@ -487,23 +671,135 @@ class MainWindow(QMainWindow):
         self._update_recent_files_menu()
         self._update_folder_navigation(path)
 
+    def load_email_async(self, path: str | Path, *, navigation_index: int | None = None) -> None:
+        """Queue a UI email load; one parse runs and only the latest pending request is kept."""
+        if self._email_load_closed:
+            return
+        self._pending_navigation_index = navigation_index
+        self._pending_navigation_active = navigation_index is not None
+        self._pending_navigation_path = Path(path).resolve() if navigation_index is not None else None
+        self._email_load_request_id += 1
+        request = (self._email_load_request_id, path)
+        thread = self._email_load_thread
+        # A finished worker still owns this slot until its queued finished event.
+        if thread is not None:
+            self._pending_email_load = request
+            return
+        self._start_email_load(*request)
+
+    def _start_email_load(self, request_id: int, path: str | Path) -> None:
+        if self._email_load_closed:
+            return
+        self._welcome_loading.setText(tr("welcome.opening", filename=display_safe_text(Path(path).name)))
+        self._welcome_loading.show()
+        if self._current_email is None:
+            self._content_stack.setCurrentWidget(self._welcome_page)
+        self.statusBar().showMessage(
+            tr("status.opening", filename=display_safe_text(Path(path).name))
+        )
+        thread = EmailLoadThread(self._parser, request_id, path)
+        self._email_load_thread = thread
+        thread.loaded.connect(self._on_email_load_succeeded)
+        thread.failed.connect(self._on_email_load_failed)
+        thread.finished.connect(self._on_email_load_finished)
+        thread.start()
+
+    def _on_email_load_succeeded(self, request_id: int, requested_path: str | Path, email: ParsedEmail) -> None:
+        if self._email_load_closed or request_id != self._email_load_request_id:
+            return
+        self._welcome_loading.hide()
+        self._pending_navigation_index = None
+        self._pending_navigation_path = None
+        self._pending_navigation_active = False
+        current_path = Path(email.source_path) if email.source_path is not None else Path(requested_path)
+        self._current_email_path = current_path
+        self._display_email(email, source_path=current_path)
+        self.statusBar().showMessage(tr("status.file_opened", source_path=display_safe_text(current_path)), 5000)
+        try:
+            self._settings_service.add_recent_file(current_path)
+        except OSError as exc:
+            self._show_settings_save_error(exc)
+        self._update_recent_files_menu()
+        self._update_folder_navigation(current_path)
+
+    def _on_email_load_failed(self, request_id: int, error: Exception) -> None:
+        if self._email_load_closed or request_id != self._email_load_request_id:
+            return
+        self._welcome_loading.hide()
+        self.statusBar().clearMessage()
+        if self._current_email is None:
+            self._content_stack.setCurrentWidget(self._welcome_page)
+        self._pending_navigation_index = None
+        self._pending_navigation_path = None
+        self._pending_navigation_active = False
+        self._show_error(tr("error.open_eml.title"), error)
+
+    def _on_email_load_finished(self) -> None:
+        thread = self.sender()
+        if not isinstance(thread, EmailLoadThread):
+            return
+        if self._email_load_thread is thread:
+            self._email_load_thread = None
+        thread.deleteLater()
+        if self._email_load_closed:
+            return
+        pending = self._pending_email_load
+        self._pending_email_load = None
+        if pending is not None:
+            self._start_email_load(*pending)
+
     def _update_folder_navigation(self, current_path: str | Path) -> None:
         try:
             path = Path(current_path).resolve()
             parent = path.parent
-            exts = {".eml", ".msg"}
-            files = [p for p in parent.iterdir() if p.is_file() and p.suffix.lower() in exts]
-            files.sort(key=lambda p: p.name.lower())
-            self._folder_emails = files
+            watched = self._folder_watcher.directories()
+            watched_normalized = {os.path.normcase(os.path.normpath(str(Path(item).resolve()))) for item in watched}
+            parent_normalized = os.path.normcase(os.path.normpath(str(parent)))
+            if watched_normalized != {parent_normalized}:
+                if watched:
+                    self._folder_watcher.removePaths(watched)
+                if parent.is_dir():
+                    if not self._folder_watcher.addPath(str(parent)):
+                        # Unsupported watchers must use fresh scans, not stale cache.
+                        self._folder_navigation.invalidate()
+            self._folder_emails = list(self._folder_navigation.files(parent))
             try:
                 self._current_folder_index = self._folder_emails.index(path)
             except ValueError:
                 self._current_folder_index = -1
+            if self._pending_navigation_active:
+                pending_path = self._pending_navigation_path
+                try:
+                    self._pending_navigation_index = self._folder_emails.index(pending_path) if pending_path is not None else None
+                except ValueError:
+                    self._pending_navigation_path = None
+                    self._pending_navigation_index = None
+                    self._pending_navigation_active = False
+                    self._pending_email_load = None
+                    self._email_load_request_id += 1
         except Exception:
             self._folder_emails = []
             self._current_folder_index = -1
+            if self._pending_navigation_active:
+                self._pending_navigation_active = False
+                self._pending_navigation_path = None
+                self._pending_navigation_index = None
+                self._pending_email_load = None
+                self._email_load_request_id += 1
 
         self._update_navigation_actions()
+
+    def _on_folder_changed(self, folder: str) -> None:
+        """Invalidate the current listing and reflect filesystem changes."""
+        if self._email_load_closed:
+            return
+        self._folder_navigation.invalidate(folder)
+        self._folder_change_timer.start()
+
+    def _refresh_folder_navigation_after_change(self) -> None:
+        if self._email_load_closed or self._current_email_path is None:
+            return
+        self._update_folder_navigation(self._current_email_path)
 
     def _update_navigation_actions(self) -> None:
         has_prev = self._current_folder_index > 0
@@ -512,14 +808,29 @@ class MainWindow(QMainWindow):
         self._next_email_action.setEnabled(has_next)
 
     def _navigate_prev_email(self) -> None:
-        if self._current_folder_index > 0:
-            prev_file = self._folder_emails[self._current_folder_index - 1]
-            self.load_email(prev_file)
+        index = self._navigation_base_index()
+        if index > 0:
+            target = index - 1
+            self.load_email_async(self._folder_emails[target], navigation_index=target)
 
     def _navigate_next_email(self) -> None:
-        if 0 <= self._current_folder_index < len(self._folder_emails) - 1:
-            next_file = self._folder_emails[self._current_folder_index + 1]
-            self.load_email(next_file)
+        index = self._navigation_base_index()
+        if 0 <= index < len(self._folder_emails) - 1:
+            target = index + 1
+            self.load_email_async(self._folder_emails[target], navigation_index=target)
+
+    def _navigation_base_index(self) -> int:
+        if not self._pending_navigation_active:
+            return self._current_folder_index
+        if self._pending_navigation_path is None:
+            return -1
+        try:
+            self._pending_navigation_index = self._folder_emails.index(self._pending_navigation_path)
+        except ValueError:
+            self._pending_navigation_index = None
+            self._pending_navigation_path = None
+            return -1
+        return self._pending_navigation_index
 
     def _save_as(self) -> None:
         if self._current_email is None or self._current_email.source_path is None:
@@ -545,7 +856,7 @@ class MainWindow(QMainWindow):
             self._show_error(tr("dialog.save_as.title"), exc)
 
     def _export_as_pdf(self) -> None:
-        if self._current_email is None:
+        if self._current_email is None or self._body_widget.print_busy:
             return
 
         default_name = "email.pdf"
@@ -568,12 +879,40 @@ class MainWindow(QMainWindow):
             target_path = target_path.with_suffix(".pdf")
 
         try:
+            try:
+                previous_stat = target_path.stat()
+                previous_stamp = (previous_stat.st_mtime_ns, previous_stat.st_size)
+                existed_before = True
+            except FileNotFoundError:
+                previous_stamp = None
+                existed_before = False
+            except OSError:
+                previous_stamp = None
+                existed_before = True
+
             printer = QPrinter(QPrinter.PrinterMode.HighResolution)
             printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
             printer.setOutputFileName(str(target_path))
 
             def _on_pdf_finished(success: bool) -> None:
+                if self._email_load_closed:
+                    return
                 if success:
+                    try:
+                        output_stat = target_path.stat()
+                        output_stamp = (output_stat.st_mtime_ns, output_stat.st_size)
+                        output_valid = output_stat.st_size > 0 and (
+                            not existed_before
+                            or (previous_stamp is not None and output_stamp != previous_stamp)
+                        )
+                    except OSError:
+                        output_valid = False
+                    if not output_valid:
+                        self._show_error(
+                            tr("dialog.export_pdf.title"),
+                            RuntimeError("PDF export did not create a new non-empty file"),
+                        )
+                        return
                     dialogs.show_info(self, tr("dialog.export_pdf.title"), tr("dialog.export_pdf.success", path=target_path.name))
                     self.statusBar().showMessage(tr("dialog.export_pdf.success", path=str(target_path)), 5000)
                 else:
@@ -603,18 +942,63 @@ class MainWindow(QMainWindow):
 
         dialogs.show_source_dialog(self, tr("dialog.source.title"), source_text)
 
-    def _display_email(self, email: ParsedEmail) -> None:
+    def _display_email(self, email: ParsedEmail, *, source_path: str | Path | None = None) -> None:
         self._current_email = email
-        self._subject_edit.setText(email.subject)
-        self._sender_edit.setText(email.sender)
-        self._to_edit.setText(email.recipients)
-        self._cc_edit.setText(email.cc)
-        self._date_edit.setText(email.date)
-        self._current_file_label.setText(str(email.source_path or ""))
-        self._forward_button.setEnabled(email.source_path is not None)
+        self._subject_edit.setText(display_safe_text(email.subject))
+        self._sender_edit.setText(display_safe_text(email.sender))
+        self._to_edit.setText(display_safe_text(email.recipients))
+        self._cc_edit.setText(display_safe_text(email.cc))
+        self._date_edit.setText(display_safe_text(email.date))
+        file_path = Path(source_path) if source_path is not None else (Path(email.source_path) if email.source_path else None)
+        self._current_file_label.setText(display_safe_text(file_path or ""))
+        self._current_file_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._current_file_label.setToolTip(safe_tooltip(file_path or ""))
+        subject = display_safe_text(email.subject or tr("app.untitled_subject"))
+        self._subject_summary.setText(subject)
+        self._subject_summary.setToolTip(safe_tooltip(email.subject or tr("app.untitled_subject")))
+        sender = display_safe_text(email.sender or tr("metadata.unknown"))
+        date = display_safe_text(email.date or tr("metadata.unknown"))
+        filename = file_path.name if file_path else tr("metadata.unknown")
+        self._summary_meta.setText(f"{sender} · {date} · {display_safe_text(filename)}")
+        self._summary_meta.setToolTip(safe_tooltip(f"{email.sender} · {email.date} · {file_path or ''}"))
+        self._set_details_visible(self._details_toggle.isChecked())
+        cc_label_item = self._metadata_group.layout().labelForField(self._cc_edit)
+        if cc_label_item is not None:
+            cc_label_item.setVisible(bool(email.cc))
+        self._cc_edit.setVisible(bool(email.cc))
+        self._forward_button.setEnabled(file_path is not None)
         self._body_widget.set_email(email)
         self._attachment_panel.set_attachments(email.attachments)
+        self._content_stack.setCurrentWidget(self._message_page)
+        self._update_print_actions()
         self._update_window_title()
+
+    def _set_details_visible(self, visible: bool) -> None:
+        self._metadata_group.setVisible(visible and self._current_email is not None)
+        self._metadata_scroll_area.setVisible(visible and self._current_email is not None)
+        self._details_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if visible else Qt.ArrowType.RightArrow
+        )
+
+    def _show_summary_copy_menu(self, point) -> None:
+        email = self._current_email
+        if email is None:
+            return
+        menu = QMenu(self)
+        copy_subject = menu.addAction(tr("copy.subject"))
+        copy_subject.triggered.connect(lambda: self._copy_to_clipboard(email.subject))
+        copy_sender = menu.addAction(tr("copy.sender"))
+        copy_sender.triggered.connect(lambda: self._copy_to_clipboard(email.sender))
+        menu.exec(self._subject_summary.mapToGlobal(point))
+
+    def _update_print_actions(self, _busy: bool | None = None) -> None:
+        can_print = self._current_email is not None and not self._body_widget.print_busy
+        self._print_action.setEnabled(can_print)
+        self._export_pdf_action.setEnabled(can_print)
+        self._open_browser_action.setEnabled(can_print)
+        self._save_as_action.setEnabled(
+            self._current_email is not None and self._current_email.source_path is not None
+        )
 
     def _copy_to_clipboard(self, text: str) -> None:
         clipboard = QApplication.clipboard()
@@ -623,7 +1007,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(tr("status.copied"), 3000)
 
     def _open_in_browser(self) -> None:
-        if self._current_email is None:
+        if self._current_email is None or self._body_widget.print_busy:
             return
 
         html_content = self._body_widget.current_prepared_html()
@@ -665,12 +1049,13 @@ class MainWindow(QMainWindow):
                 update_service=self._update_service,
                 auto_check_update=False,
             )
+            win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
             self._child_windows.append(win)
             win.destroyed.connect(lambda checked=False, w=win: self._child_windows.remove(w) if w in self._child_windows else None)
             win.show()
 
     def _print_current_message(self) -> None:
-        if self._current_email is None:
+        if self._current_email is None or self._body_widget.print_busy:
             return
 
         try:
@@ -785,15 +1170,14 @@ class MainWindow(QMainWindow):
             if is_dangerous_extension(self._file_operation_service.sanitize_filename(att.filename))
         ]
         if dangerous_items:
-            names_summary = ", ".join(dangerous_items[:3]) + ("..." if len(dangerous_items) > 3 else "")
-            reply = QMessageBox.warning(
+            names_summary = ", ".join(display_safe_text(name) for name in dangerous_items[:3])
+            names_summary += "..." if len(dangerous_items) > 3 else ""
+            confirmed = dialogs.ask_warning_yes_no(
                 self,
                 tr("dialog.save_dangerous.title"),
                 tr("dialog.save_dangerous.body", filename=names_summary),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
             )
-            if reply != QMessageBox.StandardButton.Yes:
+            if not confirmed:
                 self.statusBar().showMessage(tr("status.attachment_save_canceled"), 5000)
                 return
 
@@ -849,14 +1233,12 @@ class MainWindow(QMainWindow):
 
         safe_filename = self._file_operation_service.sanitize_filename(attachment.filename)
         if is_dangerous_extension(safe_filename):
-            reply = QMessageBox.warning(
+            confirmed = dialogs.ask_warning_yes_no(
                 self,
                 tr("dialog.save_dangerous.title"),
-                tr("dialog.save_dangerous.body", filename=safe_filename),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
+                tr("dialog.save_dangerous.body", filename=display_safe_text(safe_filename)),
             )
-            if reply != QMessageBox.StandardButton.Yes:
+            if not confirmed:
                 self.statusBar().showMessage(tr("status.attachment_save_canceled"), 5000)
                 return
 
@@ -893,19 +1275,25 @@ class MainWindow(QMainWindow):
             dialogs.show_error(self, tr("error.attachment_open.title"), tr("forward.error.no_email"))
             return
 
+        if len(attachments) > 5:
+            confirmed = dialogs.ask_warning_yes_no(
+                self,
+                tr("dialog.open_many_attachments.title"),
+                tr("dialog.open_many_attachments.body", count=len(attachments)),
+            )
+            if not confirmed:
+                return
+
         failed_files: list[str] = []
         for attachment in attachments:
             safe_filename = self._file_operation_service.sanitize_filename(attachment.filename)
-            ext = Path(safe_filename).suffix.lower()
-            if ext in DANGEROUS_EXTENSIONS:
-                reply = QMessageBox.warning(
+            if is_dangerous_extension(safe_filename):
+                confirmed = dialogs.ask_warning_yes_no(
                     self,
                     tr("dialog.open_dangerous.title"),
-                    tr("dialog.open_dangerous.body", filename=safe_filename),
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No,
+                    tr("dialog.open_dangerous.body", filename=display_safe_text(safe_filename)),
                 )
-                if reply != QMessageBox.StandardButton.Yes:
+                if not confirmed:
                     continue
 
             # 동일 파일명 충돌 방지를 위해 첨부파일 인덱스별 전용 하위 디렉터리 사용
@@ -925,7 +1313,9 @@ class MainWindow(QMainWindow):
                 else:
                     QDesktopServices.openUrl(QUrl.fromLocalFile(str(dest_file)))
             except Exception as exc:
-                failed_files.append(f"{attachment.filename}: {exc}")
+                failed_files.append(
+                    f"{_safe_message_lines(attachment.filename)}: {_safe_message_lines(exc)}"
+                )
 
         if failed_files:
             dialogs.show_error(
@@ -987,6 +1377,44 @@ class MainWindow(QMainWindow):
                 self.close()
 
     def closeEvent(self, event) -> None:
+        if self._close_event_started:
+            super().closeEvent(event)
+            return
+        self._close_event_started = True
+        self._email_load_closed = True
+        self._pending_email_load = None
+        self._pending_navigation_index = None
+        self._pending_navigation_path = None
+        self._pending_navigation_active = False
+        self._folder_change_timer.stop()
+        watched = self._folder_watcher.directories()
+        if watched:
+            self._folder_watcher.removePaths(watched)
+        if self._window_manager is None and self._body_widget.print_busy:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+            _orphaned_print_windows.add(self)
+            self._body_widget.print_busy_changed.connect(self._on_standalone_print_busy_changed)
+        if self._email_load_thread is not None and self._email_load_thread.isRunning():
+            thread = self._email_load_thread
+            try:
+                thread.disconnect(self)
+            except (RuntimeError, TypeError):
+                pass
+            if self._window_manager is not None and hasattr(self._window_manager, "retain_thread"):
+                self._window_manager.retain_thread(thread)
+            else:
+                # app.py wires managed shutdown to WindowManager; standalone windows retain workers until completion.
+                _orphaned_email_threads.add(thread)
+                thread.finished.connect(lambda t=thread: _release_orphaned_email_thread(t))
+                app = QApplication.instance()
+                if app is not None and not app.property("emlViewerOrphanThreadCleanupConnected"):
+                    app.aboutToQuit.connect(_wait_for_orphaned_email_threads)
+                    app.setProperty("emlViewerOrphanThreadCleanupConnected", True)
+                # The worker can finish between the initial running check and signal connection.
+                if thread.isFinished():
+                    _release_orphaned_email_thread(thread)
+            self._email_load_thread = None
+
         if self._update_check_thread is not None and self._update_check_thread.isRunning():
             thread = self._update_check_thread
             try:
@@ -1036,8 +1464,27 @@ class MainWindow(QMainWindow):
             pass
         super().closeEvent(event)
 
+    def _on_standalone_print_busy_changed(self, busy: bool) -> None:
+        if not self._email_load_closed or busy:
+            return
+        try:
+            self._body_widget.print_busy_changed.disconnect(self._on_standalone_print_busy_changed)
+        except (RuntimeError, TypeError):
+            pass
+        _orphaned_print_windows.discard(self)
+        self.deleteLater()
+
     def _show_error(self, title: str, error: Exception) -> None:
-        dialogs.show_error(self, title, ErrorService.to_user_message(error))
+        dialogs.show_error(self, title, _safe_message_lines(ErrorService.to_user_message(error)))
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.PaletteChange, QEvent.Type.DevicePixelRatioChange):
+            action = getattr(self, "_print_action", None)
+            if action is not None:
+                action.setIcon(
+                    printer_icon(self.palette(), device_pixel_ratio=self.devicePixelRatioF())
+                )
 
     def _show_settings_save_error(self, error: OSError) -> None:
         logger.warning("Settings could not be saved: %s", error)

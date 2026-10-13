@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from eml_viewer.gui.i18n import tr
+from eml_viewer.gui.ui_helpers import display_safe_text
 
 
 @dataclass(frozen=True)
@@ -118,29 +119,44 @@ def request_forward_recipients(
 
 
 def ask_overwrite(parent: QWidget, path: Path) -> bool:
-    result = QMessageBox.question(
+    return ask_warning_yes_no(
         parent,
         tr("dialog.overwrite.title"),
-        tr("dialog.overwrite.body", path=path),
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        QMessageBox.StandardButton.No,
+        tr("dialog.overwrite.body", path=display_safe_text(path)),
     )
-    return result == QMessageBox.StandardButton.Yes
 
 
 def ask_execute_file_operation(parent: QWidget, title: str, preview_message: str) -> bool:
-    result = QMessageBox.question(
+    safe_preview = "\n".join(display_safe_text(line) for line in str(preview_message).split("\n"))
+    return ask_warning_yes_no(
         parent,
         title,
-        tr("dialog.execute.body", preview_message=preview_message),
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        QMessageBox.StandardButton.No,
+        tr("dialog.execute.body", preview_message=safe_preview),
     )
-    return result == QMessageBox.StandardButton.Yes
 
 
 def show_error(parent: QWidget, title: str, message: str) -> None:
-    QMessageBox.critical(parent, title, message)
+    # Email filenames and parser errors are untrusted; never auto-detect markup.
+    dialog = QMessageBox(parent)
+    dialog.setWindowTitle(title)
+    dialog.setIcon(QMessageBox.Icon.Critical)
+    dialog.setTextFormat(Qt.TextFormat.PlainText)
+    dialog.setText(message)
+    dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+    dialog.exec()
+
+
+def ask_warning_yes_no(parent: QWidget, title: str, message: str) -> bool:
+    """Confirm attachment operations with literal text and a safe default."""
+    dialog = QMessageBox(parent)
+    dialog.setWindowTitle(title)
+    dialog.setIcon(QMessageBox.Icon.Warning)
+    dialog.setTextFormat(Qt.TextFormat.PlainText)
+    dialog.setText(message)
+    dialog.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+    dialog.setDefaultButton(QMessageBox.StandardButton.No)
+    dialog.setEscapeButton(QMessageBox.StandardButton.No)
+    return dialog.exec() == QMessageBox.StandardButton.Yes
 
 
 def show_warning(parent: QWidget, title: str, message: str) -> None:

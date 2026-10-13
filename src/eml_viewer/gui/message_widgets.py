@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import html
+import logging
 import mimetypes
+import os
 import re
 import tempfile
 from pathlib import Path
@@ -29,25 +31,21 @@ from PySide6.QtWidgets import (
 )
 from eml_viewer.gui.search_bar import SearchBarWidget
 
-try:
-    from PySide6.QtWebEngineCore import (
-        QWebEnginePage,
-        QWebEngineProfile,
-        QWebEngineSettings,
-        QWebEngineUrlRequestInterceptor,
-    )
-    from PySide6.QtWebEngineWidgets import QWebEngineView
-except Exception:  # pragma: no cover - exercised only on minimal PySide installs.
-    QWebEnginePage = None
-    QWebEngineProfile = None
-    QWebEngineSettings = None
-    QWebEngineUrlRequestInterceptor = None
-    QWebEngineView = None
+QWebEnginePage = None
+QWebEngineProfile = None
+QWebEngineSettings = None
+QWebEngineUrlRequestInterceptor = None
+QWebEngineView = None
+ZoomWebEngineView = None
+MailWebEnginePage = None
+RemoteContentInterceptor = None
+_WEBENGINE_IMPORT_ATTEMPTED = False
 
 from eml_viewer.models.email_data import ParsedEmail
 from eml_viewer.gui.i18n import tr
 
 
+_LOGGER = logging.getLogger(__name__)
 _TRANSPARENT_IMAGE_URI = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
 
 
@@ -67,9 +65,36 @@ class ZoomTextBrowser(QTextBrowser):
         super().wheelEvent(event)
 
 
-if QWebEngineView is not None:
+_SHARED_WEB_PROFILE = None
 
-    class ZoomWebEngineView(QWebEngineView):
+
+def _load_webengine_types() -> bool:
+    """Load Qt WebEngine only when an HTML message first needs rendering."""
+    global QWebEnginePage, QWebEngineProfile, QWebEngineSettings
+    global QWebEngineUrlRequestInterceptor, QWebEngineView
+    global ZoomWebEngineView, MailWebEnginePage, RemoteContentInterceptor
+    global _WEBENGINE_IMPORT_ATTEMPTED
+    if _WEBENGINE_IMPORT_ATTEMPTED:
+        return QWebEngineView is not None
+    _WEBENGINE_IMPORT_ATTEMPTED = True
+    try:
+        from PySide6.QtWebEngineCore import (
+            QWebEnginePage as WebEnginePage,
+            QWebEngineProfile as WebEngineProfile,
+            QWebEngineSettings as WebEngineSettings,
+            QWebEngineUrlRequestInterceptor as WebEngineUrlRequestInterceptor,
+        )
+        from PySide6.QtWebEngineWidgets import QWebEngineView as WebEngineView
+    except Exception:  # pragma: no cover - minimal PySide installs.
+        return False
+
+    QWebEnginePage = WebEnginePage
+    QWebEngineProfile = WebEngineProfile
+    QWebEngineSettings = WebEngineSettings
+    QWebEngineUrlRequestInterceptor = WebEngineUrlRequestInterceptor
+    QWebEngineView = WebEngineView
+
+    class ZoomWebEngineView(WebEngineView):
         """QWebEngineView with Ctrl+mouse-wheel zoom requests."""
 
         zoom_delta_requested = Signal(int)
@@ -81,39 +106,129 @@ if QWebEngineView is not None:
                     self.zoom_delta_requested.emit(1 if delta > 0 else -1)
                     event.accept()
                     return
-
             super().wheelEvent(event)
 
-
-    class MailWebEnginePage(QWebEnginePage):
+    class MailWebEnginePage(WebEnginePage):
         """Keeps message clicks out of the embedded HTML viewer."""
 
         def acceptNavigationRequest(self, url, navigation_type, is_main_frame: bool) -> bool:
             scheme = url.scheme().lower()
             if is_main_frame and scheme in {"http", "https", "mailto"}:
-                if navigation_type == QWebEnginePage.NavigationType.NavigationTypeLinkClicked:
+                if navigation_type == WebEnginePage.NavigationType.NavigationTypeLinkClicked:
                     QDesktopServices.openUrl(url)
                 return False
             return super().acceptNavigationRequest(url, navigation_type, is_main_frame)
 
-
-    class RemoteContentInterceptor(QWebEngineUrlRequestInterceptor):
+    class RemoteContentInterceptor(WebEngineUrlRequestInterceptor):
         """Blocks remote message resources until the user explicitly allows them."""
 
         def __init__(self, parent: QWidget | None = None) -> None:
             super().__init__(parent)
             self.allow_remote_content = False
+            self.allowed_inline_root: str | None = None
+            self.allowed_inline_roots: set[str] = set()
+            self.allowed_inline_files: set[str] = set()
+
+        def set_allowed_inline_root(
+            self,
+            path: Path | None,
+            allowed_files: set[Path] | None = None,
+        ) -> None:
+            self.allowed_inline_root = self._normalized_trusted_path(path) if path is not None else None
+            self.allowed_inline_roots = set()
+            self.allowed_inline_files = set()
+            if path is None:
+                return
+            trusted_paths = {path, *(allowed_files or set())}
+            self.allowed_inline_roots.add(self.allowed_inline_root)
+            for trusted_path in trusted_paths:
+                normalized = self._normalized_trusted_path(trusted_path)
+                if trusted_path == path:
+                    self.allowed_inline_roots.add(normalized)
+                else:
+                    self.allowed_inline_files.add(normalized)
+                try:
+                    # These are app-generated paths, never request URL paths.
+                    resolved = trusted_path.resolve(strict=False)
+                except OSError:
+                    continue
+                resolved_normalized = self._normalized_trusted_path(resolved)
+                if trusted_path == path:
+                    self.allowed_inline_roots.add(resolved_normalized)
+                else:
+                    self.allowed_inline_files.add(resolved_normalized)
+
+        @staticmethod
+        def _normalized_trusted_path(path: Path) -> str:
+            return os.path.normcase(os.path.normpath(os.path.abspath(str(path))))
 
         def interceptRequest(self, info) -> None:
-            scheme = info.requestUrl().scheme().lower()
-            if scheme in {"http", "https"} and not self.allow_remote_content:
-                info.block(True)
+            request_url = info.requestUrl()
+            scheme = request_url.scheme().lower()
+            if scheme in {"data", "about", "blob"}:
+                return
+            if scheme in {"http", "https"}:
+                if not self.allow_remote_content:
+                    info.block(True)
+                return
+            if scheme == "file" and not request_url.host() and self.allowed_inline_root is not None:
+                resource_path = request_url.toLocalFile()
+                if not self._is_unc_or_device_path(resource_path):
+                    try:
+                        if not self._is_unambiguous_absolute_path(resource_path):
+                            info.block(True)
+                            return
+                        candidate_path = resource_path
+                        if os.name == "nt":
+                            candidate_path = candidate_path.replace("/", "\\")
+                            if re.match(r"^\\[a-zA-Z]:[\\/]", candidate_path):
+                                candidate_path = candidate_path[1:]
+                        candidate = os.path.normcase(os.path.normpath(candidate_path))
+                        if candidate in self.allowed_inline_files:
+                            for root in self.allowed_inline_roots:
+                                try:
+                                    contained = os.path.commonpath((root, candidate)) == root
+                                except ValueError:
+                                    # Trusted TEMP aliases can be on different drives.
+                                    continue
+                                if contained:
+                                    return
+                    except (OSError, ValueError):
+                        pass
+            info.block(True)
 
-else:
-    ZoomWebEngineView = None
-    MailWebEnginePage = None
-    RemoteContentInterceptor = None
-_SHARED_WEB_PROFILE: QWebEngineProfile | None = None
+        @staticmethod
+        def _is_unc_or_device_path(path: str) -> bool:
+            normalized = path.replace("/", "\\")
+            return normalized.startswith(("\\\\", "\\?\\", "\\.\\"))
+
+        @classmethod
+        def _is_unambiguous_absolute_path(cls, path: str) -> bool:
+            if os.name == "nt":
+                path = path.replace("/", "\\")
+                if re.match(r"^\\[a-zA-Z]:[\\/]", path):
+                    path = path[1:]
+                if not os.path.isabs(path):
+                    return False
+                _drive, tail = os.path.splitdrive(path)
+                if ":" in tail:
+                    return False
+                for component in tail.split("\\"):
+                    if component != component.rstrip(". "):
+                        return False
+                    base_name = component.split(".", 1)[0].upper()
+                    if base_name in {
+                        "CON", "PRN", "AUX", "NUL",
+                        *(f"COM{index}" for index in range(1, 10)),
+                        *(f"LPT{index}" for index in range(1, 10)),
+                    }:
+                        return False
+                return True
+            if not os.path.isabs(path):
+                return False
+            return all(component == component.rstrip(". ") for component in path.split("/"))
+
+    return True
 
 
 def _get_shared_web_profile() -> QWebEngineProfile | None:
@@ -129,6 +244,7 @@ class MessageBodyWidget(QWidget):
     """Displays the plain text and HTML bodies of an email."""
 
     open_in_browser_requested = Signal()
+    print_busy_changed = Signal(bool)
 
     _resource_attr_pattern = re.compile(
         r"(?P<prefix>\b(?:src|background)\s*=\s*)(?P<quote>[\"'])(?P<value>.*?)(?P=quote)",
@@ -152,8 +268,10 @@ class MessageBodyWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._inline_temp_dir: tempfile.TemporaryDirectory[str] | None = None
+        self._inline_temp_files: set[Path] = set()
         self._current_email: ParsedEmail | None = None
         self._current_prepared_html = ""
+        self._current_render_failed = False
         self._base_point_size = self.font().pointSizeF() or 10.0
         self._zoom_percent = 100
         self._remote_images_auto_load = False
@@ -163,8 +281,9 @@ class MessageBodyWidget(QWidget):
         self._tabs = QTabWidget(self)
         self._plain_browser = ZoomTextBrowser(self)
         self._html_container = QWidget(self)
-        self._html_view = self._create_html_view()
-        self._html_browser = self._html_view
+        self._html_view: QWidget | None = None
+        self._html_browser: QWidget | None = None
+        self._html_placeholder_label = QLabel(self._html_container)
         self._remote_notice_label = QLabel(self)
         self._load_remote_images_button = QPushButton(self)
         self._open_browser_button = QPushButton(self)
@@ -176,12 +295,6 @@ class MessageBodyWidget(QWidget):
 
         self._plain_browser.setOpenExternalLinks(False)
         self._plain_browser.zoom_delta_requested.connect(self._change_zoom_by_steps)
-        if isinstance(self._html_view, ZoomTextBrowser):
-            self._html_view.setOpenExternalLinks(False)
-            self._html_view.zoom_delta_requested.connect(self._change_zoom_by_steps)
-        elif QWebEngineView is not None and isinstance(self._html_view, QWebEngineView):
-            self._html_view.zoom_delta_requested.connect(self._change_zoom_by_steps)
-
         self._zoom_out_button.clicked.connect(lambda: self._change_zoom_by_steps(-1))
         self._zoom_in_button.clicked.connect(lambda: self._change_zoom_by_steps(1))
         self._zoom_reset_button.clicked.connect(self.reset_zoom)
@@ -214,8 +327,8 @@ class MessageBodyWidget(QWidget):
 
         html_layout = QVBoxLayout(self._html_container)
         html_layout.setContentsMargins(0, 0, 0, 0)
+        html_layout.addWidget(self._html_placeholder_label)
         html_layout.addLayout(remote_layout)
-        html_layout.addWidget(self._html_view)
 
         self._tabs.addTab(self._plain_browser, "")
         self._tabs.addTab(self._html_container, "")
@@ -241,6 +354,9 @@ class MessageBodyWidget(QWidget):
         self._last_search_text: str = ""
         self._last_search_case: bool = False
         self._active_printer: object | None = None
+        self._print_job_token: object | None = None
+        self._deferred_render_pending = False
+        self._deferred_clear_pending = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -253,8 +369,15 @@ class MessageBodyWidget(QWidget):
         self.clear()
 
     def clear(self) -> None:
+        if self.print_busy:
+            self._deferred_clear_pending = True
+            self._deferred_render_pending = False
+            return
+        self._deferred_clear_pending = False
+        self._deferred_render_pending = False
         self._current_email = None
         self._current_prepared_html = ""
+        self._current_render_failed = False
         self._remote_images_allowed = self._remote_images_auto_load
         self._clear_inline_temp_dir()
         self._zoom_percent = 100
@@ -270,19 +393,27 @@ class MessageBodyWidget(QWidget):
         self._plain_notice_label.setText(tr("message.generated_plain_notice"))
         self._open_browser_button.setText(tr("button.open_browser"))
         self._search_bar.retranslate_ui()
-        self._tabs.setTabText(0, "Plain Text")
-        self._tabs.setTabText(1, "HTML")
+        self._tabs.setTabText(0, tr("message.tab.plain"))
+        self._tabs.setTabText(1, tr("message.tab.html"))
         if self._current_email is None:
-            self._plain_browser.setPlainText(tr("message.plain_placeholder"))
-            self._set_html_placeholder(tr("message.html_placeholder"))
+            if self.print_busy:
+                self._deferred_clear_pending = True
+                self._deferred_render_pending = False
+            else:
+                self._plain_browser.setPlainText(tr("message.plain_placeholder"))
+                self._set_html_placeholder(tr("message.html_placeholder"))
         else:
             self._render_email()
 
     def set_email(self, email: ParsedEmail) -> None:
+        self._deferred_clear_pending = False
         self._handle_search_cleared()
         self._current_email = email
         self._remote_images_allowed = self._remote_images_auto_load
         self._render_email()
+        if self.print_busy:
+            self._update_tab_dependent_controls()
+            return
         if self._search_bar.is_open() and self._search_bar.query():
             self._handle_search(
                 self._search_bar.query(),
@@ -301,6 +432,10 @@ class MessageBodyWidget(QWidget):
     @property
     def zoom_percent(self) -> int:
         return self._zoom_percent
+
+    @property
+    def print_busy(self) -> bool:
+        return self._print_job_token is not None
 
     def reset_zoom(self) -> None:
         self.set_zoom_percent(100)
@@ -322,9 +457,13 @@ class MessageBodyWidget(QWidget):
         self._render_email()
 
     def _render_email(self) -> None:
+        if self.print_busy:
+            self._deferred_render_pending = True
+            return
         if self._current_email is None:
             return
 
+        self._current_render_failed = False
         email = self._current_email
         plain_text = email.plain_body.strip() or tr("message.no_plain")
         html_text = email.html_body.strip()
@@ -387,49 +526,124 @@ class MessageBodyWidget(QWidget):
 
     def print_content(self, printer: object, on_finished: object | None = None) -> None:
         """현재 활성화된 탭의 본문을 인쇄합니다."""
+        if self._active_printer is not None:
+            if callable(on_finished):
+                on_finished(False)
+            return
         self._active_printer = printer
-        is_plain = self._tabs.currentIndex() == 0 or isinstance(self._html_view, ZoomTextBrowser)
+        job_token = object()
+        self._print_job_token = job_token
+        self._open_browser_button.setEnabled(False)
+        self.print_busy_changed.emit(True)
+        print_signal_connections: list[tuple[object, object]] = []
+
+        def finish(ok: bool) -> None:
+            if self._print_job_token is not job_token:
+                return
+            for signal, callback in print_signal_connections:
+                try:
+                    signal.disconnect(callback)
+                except (RuntimeError, TypeError):
+                    pass
+            print_signal_connections.clear()
+            self._print_job_token = None
+            self._active_printer = None
+            self.print_busy_changed.emit(False)
+            try:
+                if self._deferred_clear_pending:
+                    self.clear()
+                elif self._deferred_render_pending:
+                    self._deferred_render_pending = False
+                    self._render_email()
+                    if self._search_bar.is_open() and self._search_bar.query():
+                        self._handle_search(
+                            self._search_bar.query(),
+                            True,
+                            self._search_bar.is_case_sensitive(),
+                        )
+            except Exception:
+                _LOGGER.exception("Deferred message body render failed after printing")
+                self._deferred_render_pending = False
+                self._current_prepared_html = ""
+                self._current_render_failed = True
+                try:
+                    if self._current_email is None:
+                        self._plain_browser.setPlainText(tr("message.plain_placeholder"))
+                        self._set_html_placeholder(tr("message.html_placeholder"))
+                    else:
+                        self._plain_browser.setPlainText(
+                            self._current_email.plain_body.strip() or tr("message.no_plain")
+                        )
+                        message = (
+                            tr("message.html_render_failed")
+                            if self._current_email.html_body.strip()
+                            else tr("message.html_empty")
+                        )
+                        self._set_html_placeholder(message)
+                except Exception:
+                    pass
+            finally:
+                try:
+                    self._update_tab_dependent_controls()
+                except Exception:
+                    pass
+                if callable(on_finished):
+                    on_finished(ok)
+
+        is_plain = (
+            self._tabs.currentIndex() == 0
+            or self._html_view is None
+            or isinstance(self._html_view, ZoomTextBrowser)
+        )
         if is_plain:
             try:
                 browser = (
                     self._plain_browser
-                    if self._tabs.currentIndex() == 0
+                    if self._tabs.currentIndex() == 0 or self._html_view is None
                     else self._html_view
                 )
                 browser.document().print_(printer)
-                self._active_printer = None
-                if callable(on_finished):
-                    on_finished(True)
+                print_ok = True
             except Exception:
-                self._active_printer = None
-                if callable(on_finished):
-                    on_finished(False)
+                print_ok = False
+            finish(print_ok)
         else:
             if QWebEngineView is not None and isinstance(self._html_view, QWebEngineView):
                 view = self._html_view
                 print_func = getattr(view, "print_", None) or getattr(view, "print", None)
+                if print_func is None or not hasattr(view, "printFinished"):
+                    finish(False)
+                    return
+                try:
+                    finished_signal = view.printFinished
+                    finished_signal.connect(finish, Qt.ConnectionType.SingleShotConnection)
+                    print_signal_connections.append((finished_signal, finish))
+                    page = view.page() if hasattr(view, "page") else None
+                    terminated_signal = getattr(page, "renderProcessTerminated", None)
+                    if terminated_signal is not None:
+                        def on_render_terminated(*_args) -> None:
+                            finish(False)
 
-                def _on_finish(ok: bool) -> None:
-                    self._active_printer = None
-                    if callable(on_finished):
-                        on_finished(ok)
-
-                if hasattr(view, "printFinished"):
-                    view.printFinished.connect(_on_finish, Qt.ConnectionType.SingleShotConnection)
-
-                if print_func is not None:
+                        terminated_signal.connect(on_render_terminated)
+                        print_signal_connections.append((terminated_signal, on_render_terminated))
                     print_func(printer)
-                elif hasattr(view, "page"):
-                    view.page().print(printer, _on_finish)
+                except Exception:
+                    finish(False)
             else:
-                self._active_printer = None
-                if callable(on_finished):
-                    on_finished(False)
+                finish(False)
 
     def _handle_search(self, text: str, forward: bool, case_sensitive: bool) -> None:
-        is_plain = self._tabs.currentIndex() == 0 or isinstance(self._html_view, ZoomTextBrowser)
+        is_plain = (
+            self._tabs.currentIndex() == 0
+            or self._html_view is None
+            or isinstance(self._html_view, ZoomTextBrowser)
+        )
         if is_plain:
-            target_browser = self._plain_browser if self._tabs.currentIndex() == 0 else self._html_view
+            target_browser = (
+                self._plain_browser
+                if self._tabs.currentIndex() == 0 or self._html_view is None
+                else self._html_view
+            )
             if text != self._last_search_text or case_sensitive != self._last_search_case:
                 self._last_search_text = text
                 self._last_search_case = case_sensitive
@@ -498,11 +712,12 @@ class MessageBodyWidget(QWidget):
         self._search_matches = []
         self._current_match_index = -1
         self._last_search_text = ""
+        self._search_bar.set_match_status(0, 0)
 
     def _update_tab_dependent_controls(self) -> None:
         self._update_plain_notice_visibility()
         self._update_remote_controls()
-        self._open_browser_button.setEnabled(self._current_email is not None)
+        self._open_browser_button.setEnabled(self._current_email is not None and not self.print_busy)
 
     def _update_plain_notice_visibility(self) -> None:
         is_plain_tab = self._tabs.currentWidget() == self._plain_browser
@@ -519,8 +734,12 @@ class MessageBodyWidget(QWidget):
         self._load_remote_images_button.setVisible(has_blocked_remote)
 
     def current_prepared_html(self) -> str:
+        if self._deferred_render_pending or self._deferred_clear_pending:
+            return ""
         if self._current_email is None:
             return ""
+        if self._current_render_failed:
+            return self._plain_text_html(self._current_email.plain_body)
         if self._current_prepared_html.strip():
             return self._current_prepared_html
         if self._current_email.html_body.strip():
@@ -528,7 +747,7 @@ class MessageBodyWidget(QWidget):
         return self._plain_text_html(self._current_email.plain_body)
 
     def _create_html_view(self) -> QWidget:
-        if QWebEngineView is None:
+        if not _load_webengine_types():
             fallback = ZoomTextBrowser(self)
             fallback.setPlainText(tr("message.webengine_unavailable"))
             return fallback
@@ -546,8 +765,25 @@ class MessageBodyWidget(QWidget):
         view.setPage(page)
         return view
 
+    def _ensure_html_view(self) -> QWidget:
+        """Create the HTML renderer on first use and reuse it for later messages."""
+        if self._html_view is None:
+            view = self._create_html_view()
+            self._html_view = view
+            self._html_browser = view
+            if isinstance(view, ZoomTextBrowser):
+                view.setOpenExternalLinks(False)
+                view.zoom_delta_requested.connect(self._change_zoom_by_steps)
+            elif QWebEngineView is not None and isinstance(view, QWebEngineView):
+                view.zoom_delta_requested.connect(self._change_zoom_by_steps)
+            layout = self._html_container.layout()
+            layout.addWidget(view)
+            self._html_placeholder_label.hide()
+            self._apply_zoom_controls()
+        return self._html_view
+
     def _set_html_content(self, html_body: str) -> None:
-        self._set_web_content(self._html_view, html_body, self._html_base_url())
+        self._set_web_content(self._ensure_html_view(), html_body, self._html_base_url())
 
     def _set_web_content(self, view: QWidget, html_body: str, base_url: QUrl) -> None:
         if isinstance(view, ZoomTextBrowser):
@@ -559,6 +795,10 @@ class MessageBodyWidget(QWidget):
 
         for interceptor in self._remote_content_interceptors:
             interceptor.allow_remote_content = self._remote_images_allowed
+            interceptor.set_allowed_inline_root(
+                Path(self._inline_temp_dir.name) if self._inline_temp_dir is not None else None,
+                self._inline_temp_files,
+            )
 
         page = view.page()
         page.settings().setAttribute(
@@ -569,6 +809,10 @@ class MessageBodyWidget(QWidget):
         view.setHtml(html_body, base_url)
 
     def _set_html_placeholder(self, message: str) -> None:
+        if self._html_view is None:
+            self._html_placeholder_label.setText(message)
+            self._html_placeholder_label.show()
+            return
         if isinstance(self._html_view, ZoomTextBrowser):
             self._html_view.setPlainText(message)
             return
@@ -592,6 +836,7 @@ class MessageBodyWidget(QWidget):
     def _prepare_html(self, email: ParsedEmail, allow_remote_resources: bool = False) -> str:
         self._clear_inline_temp_dir()
         resource_to_uri: dict[str, str] = {}
+        unresolved_refs: set[str] = set()
 
         if email.inline_resources:
             self._inline_temp_dir = tempfile.TemporaryDirectory(prefix="eml-viewer-inline-")
@@ -604,15 +849,20 @@ class MessageBodyWidget(QWidget):
                     filename = f"{filename}{extension}"
                 filename = f"{index}-{filename}"
                 target_path = temp_root / filename
-                target_path.write_bytes(resource.payload)
+                try:
+                    target_path.write_bytes(resource.payload)
+                except OSError:
+                    unresolved_refs.update(self._resource_keys(resource.content_id))
+                    unresolved_refs.update(self._resource_keys(resource.content_location))
+                    unresolved_refs.update(self._resource_keys(resource.filename))
+                    continue
+                self._inline_temp_files.add(target_path)
                 for key in self._resource_keys(resource.content_id):
                     resource_to_uri[key] = target_path.as_uri()
                 for key in self._resource_keys(resource.content_location):
                     resource_to_uri[key] = target_path.as_uri()
                 for key in self._resource_keys(resource.filename):
                     resource_to_uri[key] = target_path.as_uri()
-
-        unresolved_refs: set[str] = set()
 
         def resolve_reference(value: str) -> str | None:
             for key in self._resource_keys(value):
@@ -625,8 +875,15 @@ class MessageBodyWidget(QWidget):
 
         def safe_resource_value(value: str) -> str | None:
             if self._is_remote_url(value):
-                return value if allow_remote_resources else _TRANSPARENT_IMAGE_URI
-            return resolve_reference(value)
+                if not allow_remote_resources:
+                    return _TRANSPARENT_IMAGE_URI
+                return f"https:{value}" if value.strip().startswith("//") else value
+            resolved = resolve_reference(value)
+            if resolved is not None:
+                return resolved
+            if self._is_unsafe_resource_reference(value):
+                return _TRANSPARENT_IMAGE_URI
+            return None
 
         def replace_attr(match: re.Match[str]) -> str:
             value = match.group("value")
@@ -664,6 +921,10 @@ class MessageBodyWidget(QWidget):
         if cleaned and Path(cleaned).stem.upper() in self._reserved_windows_names:
             cleaned_path = Path(cleaned)
             cleaned = f"{cleaned_path.stem}_{cleaned_path.suffix}" if cleaned_path.suffix else f"{cleaned}_"
+        cleaned_path = Path(cleaned or "inline-resource")
+        stem = cleaned_path.stem[:80]
+        suffix = cleaned_path.suffix[:32]
+        cleaned = f"{stem}{suffix}".strip(" .")
         return cleaned or "inline-resource"
 
     def _resource_keys(self, value: str) -> set[str]:
@@ -717,7 +978,21 @@ class MessageBodyWidget(QWidget):
         return False
 
     def _is_remote_url(self, value: str) -> bool:
-        return html.unescape(str(value)).strip().lower().startswith(("http://", "https://"))
+        value = html.unescape(str(value)).strip().lower()
+        return value.startswith(("http://", "https://", "//"))
+
+    def _is_unsafe_resource_reference(self, value: str) -> bool:
+        cleaned = html.unescape(str(value)).strip()
+        if not cleaned:
+            return False
+        lowered = cleaned.lower()
+        if lowered.startswith(("data:", "about:", "blob:")):
+            return False
+        if urlparse(cleaned).scheme:
+            return True
+        if cleaned.startswith(("\\\\", "/")) or re.match(r"^[a-zA-Z]:[\\/]", cleaned):
+            return True
+        return any(part == ".." for part in cleaned.replace("\\", "/").split("/"))
 
     def _looks_like_embedded_reference(self, value: str) -> bool:
         keys = self._resource_keys(value)
@@ -739,3 +1014,4 @@ class MessageBodyWidget(QWidget):
         if self._inline_temp_dir is not None:
             self._inline_temp_dir.cleanup()
             self._inline_temp_dir = None
+        self._inline_temp_files.clear()

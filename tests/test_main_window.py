@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -12,10 +13,12 @@ os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu --disable-sof
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QEvent
 
 from eml_viewer.gui import dialogs
 from eml_viewer.gui.i18n import set_language
 from eml_viewer.gui.main_window import MainWindow
+from eml_viewer.models.attachment_data import AttachmentInfo
 from eml_viewer.models.app_settings import AppSettings
 from eml_viewer.models.email_data import ParsedEmail
 from eml_viewer.services.attachment_service import AttachmentService
@@ -136,7 +139,8 @@ class MainWindowTest(unittest.TestCase):
 
         self.assertEqual(window._file_menu.title(), "File")
         self.assertEqual(window._help_menu.title(), "Help")
-        self.assertEqual(window._open_button.text(), "Open EML/MSG file")
+        self.assertEqual(window._open_button.text(), "Open email file")
+        self.assertIsNone(window._open_button.defaultAction())
         self.assertEqual(window._subject_label.text(), "Subject")
         self.assertEqual(window._sender_label.text(), "Sender")
         self.assertEqual(window._to_label.text(), "To")
@@ -144,6 +148,185 @@ class MainWindowTest(unittest.TestCase):
         self.assertEqual(window._metadata_group.title(), "Email information")
         self.assertEqual(window._open_browser_action.text(), "Open in Browser")
         self.assertEqual(window._body_widget._open_browser_button.text(), "Open in Browser")
+
+    def test_open_button_uses_the_single_open_action(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        with patch("eml_viewer.gui.main_window.dialogs.select_eml_file", return_value=None) as select_file:
+            window._open_button.click()
+        select_file.assert_called_once_with(window)
+        self.assertIsNone(window._open_button.defaultAction())
+        self.assertNotIn(window._new_window_action, window._toolbar.actions())
+        self.assertNotIn(window._open_browser_action, window._toolbar.actions())
+
+    def test_welcome_and_message_pages_keep_lazy_body_and_details_collapsed(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        self.assertIs(window._content_stack.currentWidget(), window._welcome_page)
+        self.assertFalse(window._welcome_page.acceptDrops())
+        self.assertIsNone(window._body_widget._html_view)
+
+        window._display_email(
+            ParsedEmail(
+                subject="<script>mail</script>\u202e",
+                sender="sender@example.com",
+                recipients="to@example.com",
+                date="today",
+                plain_body="Plain only",
+                html_body="",
+                source_path=Path("message.eml"),
+            )
+        )
+        self.assertIs(window._content_stack.currentWidget(), window._message_page)
+        self.assertIn("\\u202e", window._subject_summary.text())
+        self.assertNotIn("<script>", window._subject_summary.toolTip())
+        self.assertTrue(window._subject_summary.textInteractionFlags())
+        self.assertTrue(window._metadata_group.isHidden())
+        self.assertLessEqual(window._metadata_scroll_area.maximumHeight(), 150)
+        self.assertEqual(window._content_splitter.handleWidth(), 0)
+        self.assertIsNone(window._body_widget._html_view)
+        window._details_toggle.click()
+        self.assertFalse(window._metadata_group.isHidden())
+
+    def test_load_failure_clears_opening_status_and_sanitizes_error_display(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        window.statusBar().showMessage("Opening hostile.eml…")
+        with patch("eml_viewer.gui.main_window.dialogs.show_error") as show_error:
+            window._on_email_load_failed(window._email_load_request_id, ValueError("<b>bad</b>\u202e\nsecond line"))
+
+        self.assertEqual(window.statusBar().currentMessage(), "")
+        message = show_error.call_args.args[2]
+        self.assertNotIn("\u202e", message)
+        self.assertIn("\\u202e", message)
+        self.assertIn("\n", message)
+
+    def test_file_identity_uses_safe_display_and_refreshes_printer_icon(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        path = Path("<invoice>\u202e.pdf.eml")
+        email = ParsedEmail(
+            subject="Subject",
+            sender="sender@example.com",
+            recipients="to@example.com",
+            date="today",
+            plain_body="body",
+            html_body="",
+            source_path=path,
+        )
+        window._display_email(email)
+        self.assertNotIn("\u202e", window._current_file_label.text())
+        self.assertIn("&lt;invoice&gt;", window._current_file_label.toolTip())
+        self.assertEqual(email.source_path, path)
+
+        from eml_viewer.gui import main_window as main_window_module
+
+        with patch.object(main_window_module, "printer_icon", wraps=main_window_module.printer_icon) as icon_factory:
+            window.changeEvent(QEvent(QEvent.Type.PaletteChange))
+        self.assertTrue(icon_factory.called)
+
+    def test_dangerous_attachment_prompt_uses_plain_text_helper_and_safe_display(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        window._display_email(
+            ParsedEmail(
+                subject="With an executable",
+                sender="sender@example.com",
+                recipients="",
+                date="today",
+                plain_body="body",
+                html_body="",
+                source_path=Path("message.eml"),
+            )
+        )
+        raw_name = "<invoice>\u202e.exe"
+        attachment = AttachmentInfo(0, raw_name, "application/octet-stream", 1)
+        with patch.object(window._file_operation_service, "sanitize_filename", return_value=raw_name), patch(
+            "eml_viewer.gui.dialogs.ask_warning_yes_no",
+            return_value=False,
+        ) as warning, patch.object(window._attachment_service, "save_attachment") as extract:
+            window._open_attachments([attachment])
+
+        displayed_message = warning.call_args.args[2]
+        self.assertIn("<invoice>", displayed_message)
+        self.assertIn("\\u202e", displayed_message)
+        self.assertNotIn("\u202e", displayed_message)
+        self.assertEqual(attachment.filename, raw_name)
+        extract.assert_not_called()
+
+    def test_open_many_attachments_defaults_to_cancel_before_extracting(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        window._display_email(
+            ParsedEmail(
+                subject="With attachments",
+                sender="sender@example.com",
+                recipients="",
+                date="today",
+                plain_body="body",
+                html_body="",
+                source_path=Path("message.eml"),
+            )
+        )
+        attachments = [AttachmentInfo(i, f"{i}.txt", "text/plain", 1) for i in range(6)]
+        with patch(
+            "eml_viewer.gui.dialogs.ask_warning_yes_no",
+            return_value=False,
+        ) as warning, patch.object(window._attachment_service, "save_attachment") as extract:
+            window._open_attachments(attachments)
+        warning.assert_called_once()
+        extract.assert_not_called()
+
+    def test_dangerous_save_uses_plain_warning_with_display_only_filename(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        window._display_email(
+            ParsedEmail(
+                subject="With dangerous attachment",
+                sender="sender@example.com",
+                recipients="",
+                date="today",
+                plain_body="body",
+                html_body="",
+                source_path=Path("message.eml"),
+            )
+        )
+        raw_name = "x\u202e.exe"
+        attachments = [
+            AttachmentInfo(0, raw_name, "application/octet-stream", 1),
+            AttachmentInfo(1, "ordinary.txt", "text/plain", 1),
+        ]
+        with patch("eml_viewer.gui.dialogs.ask_warning_yes_no", return_value=False) as warning, patch(
+            "eml_viewer.gui.dialogs.select_attachment_directory"
+        ) as select_dir, patch.object(window._attachment_service, "save_attachments") as save_many:
+            window._save_attachments(attachments)
+
+        self.assertIn("x\\u202e.exe", warning.call_args.args[2])
+        self.assertEqual(attachments[0].filename, raw_name)
+        select_dir.assert_not_called()
+        save_many.assert_not_called()
+
+    def test_open_dangerous_suffix_after_trailing_dot_or_space_is_still_confirmed(self) -> None:
+        window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
+        window._display_email(
+            ParsedEmail(
+                subject="Dangerous names",
+                sender="sender@example.com",
+                recipients="",
+                date="today",
+                plain_body="body",
+                html_body="",
+                source_path=Path("message.eml"),
+            )
+        )
+        attachments = [
+            AttachmentInfo(i, name, "application/octet-stream", 1)
+            for i, name in enumerate(("x.exe.", "x.exe "))
+        ]
+        self.assertEqual(
+            [window._file_operation_service.sanitize_filename(item.filename) for item in attachments],
+            ["x.exe", "x.exe"],
+        )
+        with patch("eml_viewer.gui.dialogs.ask_warning_yes_no", side_effect=[False, False]) as warning, patch.object(
+            window._attachment_service, "save_attachment"
+        ) as extract:
+            window._open_attachments(attachments)
+
+        self.assertEqual(warning.call_count, 2)
+        extract.assert_not_called()
 
     def test_subject_to_and_cc_copy_buttons_write_to_clipboard(self) -> None:
         window = self._window(UpdateCheckResult("0.1.4", "0.1.4", "https://example.com", None))
@@ -272,16 +455,28 @@ class MainWindowTest(unittest.TestCase):
 
             # 이전 이메일로 이동
             window._prev_email_action.trigger()
+            deadline = time.monotonic() + 2
+            while window._current_folder_index != 0 and time.monotonic() < deadline:
+                QApplication.processEvents()
+                time.sleep(0.005)
             self.assertEqual(window._current_folder_index, 0)
             self.assertFalse(window._prev_email_action.isEnabled())
             self.assertTrue(window._next_email_action.isEnabled())
 
             # 다음 이메일로 이동 (f1 -> f2)
             window._next_email_action.trigger()
+            deadline = time.monotonic() + 2
+            while window._current_folder_index != 1 and time.monotonic() < deadline:
+                QApplication.processEvents()
+                time.sleep(0.005)
             self.assertEqual(window._current_folder_index, 1)
 
             # 다음 이메일로 이동 (f2 -> f3)
             window._next_email_action.trigger()
+            deadline = time.monotonic() + 2
+            while window._current_folder_index != 2 and time.monotonic() < deadline:
+                QApplication.processEvents()
+                time.sleep(0.005)
             self.assertEqual(window._current_folder_index, 2)
             self.assertTrue(window._prev_email_action.isEnabled())
             self.assertFalse(window._next_email_action.isEnabled())
@@ -437,9 +632,17 @@ class MainWindowTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             out_file = str(Path(temp_dir) / "test_out.pdf")
+            def finish_print(_printer, on_finished):
+                Path(out_file).write_bytes(b"pdf output")
+                on_finished(True)
+
             with patch("PySide6.QtWidgets.QFileDialog.getSaveFileName", return_value=(out_file, "PDF (*.pdf)")), \
+                 patch("eml_viewer.gui.main_window.QPrinter") as mock_printer, \
+                 patch.object(window._body_widget, "print_content", side_effect=finish_print) as print_content, \
                  patch("eml_viewer.gui.dialogs.show_info") as mock_info:
                 window._export_pdf_action.trigger()
+                print_content.assert_called_once()
+                mock_printer.return_value.setOutputFileName.assert_called_once_with(out_file)
                 mock_info.assert_called_once()
                 self.assertIn("test_out.pdf", mock_info.call_args[0][2])
 

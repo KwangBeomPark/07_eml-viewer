@@ -63,7 +63,7 @@ function Invoke-EmlReleaseBuild {
             $previousQtPlatform = $env:QT_QPA_PLATFORM
             try {
                 $env:QT_QPA_PLATFORM = 'offscreen'
-                & $python -m pytest tests -q *> (Join-Path $stage 'pytest.txt')
+                & $python -m pytest tests -q --basetemp (Join-Path $stage 'pytest-temp') *> (Join-Path $stage 'pytest.txt')
                 if ($LASTEXITCODE -ne 0) { throw "Tests failed; see $stage\pytest.txt" }
             } finally { $env:QT_QPA_PLATFORM = $previousQtPlatform }
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'tests\Test-ReleaseSigning.ps1') *> (Join-Path $stage 'signing-tests.txt')

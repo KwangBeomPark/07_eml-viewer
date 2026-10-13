@@ -137,7 +137,7 @@ class WindowManager(QObject):
         if file_path is not None:
             path_obj = Path(file_path)
             if path_obj.exists() and path_obj.is_file():
-                window.load_email(path_obj)
+                window.load_email_async(path_obj)
 
         return window
 
@@ -149,12 +149,35 @@ class WindowManager(QObject):
         body = getattr(window, "_body_widget", None)
         active_printer = getattr(body, "_active_printer", None) if body is not None else None
         html_view = getattr(body, "_html_view", None) if body is not None else None
+        busy_signal = getattr(body, "print_busy_changed", None) if body is not None else None
+        # The widget-level busy signal also covers renderer failures, where
+        # printFinished is not guaranteed to arrive. Use class declaration to
+        # distinguish a real Qt signal from MagicMock's dynamically-made attrs.
+        has_busy_signal = (
+            body is not None
+            and hasattr(type(body), "print_busy_changed")
+            and hasattr(busy_signal, "connect")
+        )
 
-        if active_printer is not None and html_view is not None and hasattr(html_view, "printFinished"):
+        if active_printer is not None and (
+            has_busy_signal or (html_view is not None and hasattr(html_view, "printFinished"))
+        ):
             logger.info("Window has active HTML printing; retaining window until print completes.")
             self._pending_print_windows.add(window)
+            release_signal = busy_signal if has_busy_signal else html_view.printFinished
+            released = False
 
-            def _on_print_finished(*_args: object) -> None:
+            def _release_window(*_args: object) -> None:
+                nonlocal released
+                if released:
+                    return
+                if has_busy_signal and _args and bool(_args[0]):
+                    return
+                released = True
+                try:
+                    release_signal.disconnect(_release_window)
+                except (RuntimeError, TypeError):
+                    pass
                 self._pending_print_windows.discard(window)
                 try:
                     window.deleteLater()
@@ -172,7 +195,10 @@ class WindowManager(QObject):
                         if app is not None:
                             app.quit()
 
-            html_view.printFinished.connect(_on_print_finished, Qt.ConnectionType.SingleShotConnection)
+            if has_busy_signal:
+                release_signal.connect(_release_window)
+            else:
+                release_signal.connect(_release_window, Qt.ConnectionType.SingleShotConnection)
         else:
             try:
                 window.deleteLater()
@@ -222,13 +248,20 @@ class WindowManager(QObject):
 
     def retain_thread(self, thread: object) -> None:
         """창이 닫혀도 실행 중인 백그라운드 스레드가 완료될 때까지 안전하게 수명을 보존합니다."""
-        if hasattr(thread, "isRunning") and not thread.isRunning():
+        if hasattr(thread, "isFinished") and thread.isFinished():
+            if hasattr(thread, "deleteLater"):
+                thread.deleteLater()
             return
         self._retained_threads.add(thread)
         if hasattr(thread, "finished"):
             thread.finished.connect(lambda: self._release_thread(thread))
+        # The worker may finish between the initial check and signal connection.
+        if hasattr(thread, "isFinished") and thread.isFinished():
+            self._release_thread(thread)
 
     def _release_thread(self, thread: object) -> None:
+        if thread not in self._retained_threads:
+            return
         self._retained_threads.discard(thread)
         if hasattr(thread, "deleteLater"):
             try:
@@ -247,6 +280,11 @@ class WindowManager(QObject):
             if hasattr(thread, "isRunning") and thread.isRunning():
                 try:
                     thread.wait()
+                except Exception:
+                    pass
+            if hasattr(thread, "isRunning") and not thread.isRunning() and hasattr(thread, "deleteLater"):
+                try:
+                    thread.deleteLater()
                 except Exception:
                     pass
         self._retained_threads.clear()

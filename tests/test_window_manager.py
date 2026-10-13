@@ -3,15 +3,18 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QThread
 
 from eml_viewer.gui.window_manager import WindowManager
 from eml_viewer.models.app_settings import AppSettings
+from eml_viewer.models.email_data import ParsedEmail
 from eml_viewer.services.attachment_service import AttachmentService
 from eml_viewer.services.eml_parser import EmlParser
 from eml_viewer.services.file_operation_service import FileOperationService
@@ -81,6 +84,90 @@ class WindowManagerTest(unittest.TestCase):
 
         win2.close()
         self.assertEqual(len(self.manager.windows), 0)
+
+    def test_retain_thread_rechecks_worker_that_finished_before_registration(self) -> None:
+        thread = MagicMock()
+        thread.isFinished.side_effect = [False, True]
+        self.manager.retain_thread(thread)
+
+        self.assertNotIn(thread, self.manager._retained_threads)
+        thread.finished.connect.assert_called_once()
+        thread.deleteLater.assert_called_once()
+
+    def test_retain_thread_deletes_already_finished_worker(self) -> None:
+        thread = MagicMock()
+        thread.isFinished.return_value = True
+
+        self.manager.retain_thread(thread)
+
+        self.assertNotIn(thread, self.manager._retained_threads)
+        thread.finished.connect.assert_not_called()
+        thread.deleteLater.assert_called_once()
+
+    def test_retain_thread_releases_after_running_worker_finishes(self) -> None:
+        release = threading.Event()
+
+        class WaitingThread(QThread):
+            def run(self) -> None:
+                release.wait(2)
+
+        thread = WaitingThread()
+        thread.start()
+        self.manager.retain_thread(thread)
+        self.assertIn(thread, self.manager._retained_threads)
+
+        release.set()
+        self.assertTrue(thread.wait(2000))
+        self.app.processEvents()
+        self.assertNotIn(thread, self.manager._retained_threads)
+
+    def test_closed_window_retains_blocked_email_worker_until_completion(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+
+        class BlockingParser:
+            def parse_file(self, path: str | Path) -> ParsedEmail:
+                started.set()
+                release.wait(3)
+                return ParsedEmail(
+                    subject="closed",
+                    sender="",
+                    recipients="",
+                    date="",
+                    plain_body="",
+                    html_body="",
+                    source_path=Path(path),
+                )
+
+        parser = BlockingParser()
+        manager = WindowManager(
+            parser=parser,
+            settings_service=self.settings_service,
+            file_operation_service=self.file_ops,
+            attachment_service=AttachmentService(parser, self.file_ops),
+            forward_service=MagicMock(spec=ForwardService),
+            update_service=self.update_service,
+            startup_manager=self.startup_manager,
+        )
+        manager._update_checked = True
+        tray = MagicMock()
+        tray.is_available = True
+        manager.set_tray_manager(tray)
+        self.settings_service.save_settings(AppSettings(minimize_to_tray_on_close=True))
+
+        window = manager.create_window()
+        window.load_email_async("blocked.eml")
+        self.assertTrue(started.wait(1))
+        thread = window._email_load_thread
+        self.assertIsNotNone(thread)
+
+        window.close()
+        self.assertIn(thread, manager._retained_threads)
+
+        release.set()
+        self.assertTrue(thread.wait(2000))
+        self.app.processEvents()
+        self.assertNotIn(thread, manager._retained_threads)
 
     def test_broadcast_settings(self) -> None:
         win1 = self.manager.create_window()
@@ -156,6 +243,26 @@ class WindowManagerTest(unittest.TestCase):
     def test_warmup_webengine_executes_safely(self) -> None:
         # WebEngine warm-up이 예외 없이 안전하게 수행되는지 확인
         self.manager.warmup_webengine()
+
+    def test_already_finished_real_worker_is_released_safely(self) -> None:
+        from PySide6.QtCore import QThread
+
+        class ReturningWorker(QThread):
+            def run(self) -> None:
+                return
+
+        thread = ReturningWorker()
+        thread.start()
+        completed = thread.wait(2000)
+        if not completed:
+            thread.quit()
+            thread.wait(2000)
+        self.assertTrue(completed)
+        self.assertTrue(thread.isFinished())
+        self.manager.retain_thread(thread)
+        self.assertNotIn(thread, self.manager._retained_threads)
+        # No native methods are called after deferred deletion is processed.
+        self.app.processEvents()
 
     def test_broadcast_settings_reverts_startup_on_failure(self) -> None:
         mock_startup = MagicMock()
@@ -237,6 +344,26 @@ class WindowManagerTest(unittest.TestCase):
             # 인쇄 완료 후 deleteLater 호출 및 목록에서 제거되어야 함
             mock_delete.assert_called_once()
             self.assertNotIn(win, self.manager._pending_print_windows)
+
+    def test_renderer_failure_releases_closed_printing_window_without_print_finished(self) -> None:
+        """A busy-to-idle transition releases retention even when Qt never emits printFinished."""
+        win = self.manager.create_window()
+        body = win._body_widget
+        body._active_printer = object()
+
+        with patch.object(win, "deleteLater") as mock_delete:
+            self.manager.unregister_window(win)
+            self.assertIn(win, self.manager._pending_print_windows)
+
+            body.print_busy_changed.emit(True)
+            self.assertIn(win, self.manager._pending_print_windows)
+            mock_delete.assert_not_called()
+
+            # Renderer termination calls the widget's completion callback, but
+            # may not produce html_view.printFinished at all.
+            body.print_busy_changed.emit(False)
+            self.assertNotIn(win, self.manager._pending_print_windows)
+            mock_delete.assert_called_once()
 
 
 if __name__ == "__main__":

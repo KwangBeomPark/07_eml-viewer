@@ -75,12 +75,16 @@ class AttachmentService:
         overwrite: bool = False,
     ) -> list[AttachmentSaveResult]:
         results: list[AttachmentSaveResult] = []
-        for attachment, destination in self._bulk_destinations(attachments, destination_dir):
-            saved_path = self.save_attachment(
-                email_path=email_path,
-                attachment_index=attachment.index,
+        destinations = self._bulk_destinations(attachments, destination_dir)
+        extracted_attachments = self._parser.iter_extracted_attachments(
+            email_path, (attachment.index for attachment, _ in destinations)
+        )
+        for (attachment, destination), extracted in zip(destinations, extracted_attachments, strict=True):
+            saved_path = self._file_operation_service.write_bytes(
                 destination_path=destination,
+                data=extracted.payload,
                 overwrite=overwrite,
+                apply_motw=True,
             )
             results.append(AttachmentSaveResult(attachment=attachment, path=saved_path))
         return results

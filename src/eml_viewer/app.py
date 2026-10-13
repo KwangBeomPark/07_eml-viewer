@@ -50,6 +50,7 @@ def main(argv: list[str] | None = None) -> int:
     sys.excepthook = _show_unhandled_exception
 
     try:
+        from PySide6.QtCore import QCoreApplication, Qt
         from PySide6.QtGui import QIcon
         from PySide6.QtWidgets import QApplication
     except ModuleNotFoundError:
@@ -93,6 +94,8 @@ def main(argv: list[str] | None = None) -> int:
             break
 
     # QApplication 초기화
+    # WebEngine is loaded lazily after startup; shared contexts must be configured first.
+    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = QApplication(argv)
     app.setApplicationName(DISPLAY_NAME)
     app.setOrganizationName("PL_Suite")

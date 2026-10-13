@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import html
 import re
+from collections import Counter
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from email import policy
@@ -246,12 +248,16 @@ class EmlParser:
 
         current_index = 0
         for part in parts:
-            if self._is_inline_resource(part, html_references) or not self._is_attachment(part):
+            if (
+                self._is_body_text_part(part)
+                or self._is_inline_resource(part, html_references)
+                or not self._is_attachment(part)
+            ):
                 continue
 
-            info = self._attachment_info(part, current_index)
             if current_index == attachment_index:
                 payload = part.get_payload(decode=True) or b""
+                info = self._attachment_info(part, current_index, payload=payload)
                 return ExtractedAttachment(info=info, payload=payload)
 
             current_index += 1
@@ -270,6 +276,57 @@ class EmlParser:
             return BytesParser(policy=policy.default).parsebytes(raw_bytes)
         except Exception as exc:
             raise EmlParseError(tr("parse.cannot_parse")) from exc
+
+    def iter_extracted_attachments(
+        self, path: str | Path, attachment_indices: Iterable[int]
+    ) -> Iterator[ExtractedAttachment]:
+        """Decode selected EML attachments in request order after one source load.
+
+        All state belongs to this iterator. MSG retains its existing extraction
+        path; its performance has not been verified with a real MSG fixture.
+        Invalid indexes are reported at their position, preserving partial saves.
+        """
+        requested = list(attachment_indices)
+        if not requested:
+            return
+        source_path = Path(path)
+        if source_path.suffix.lower() == ".msg":
+            for index in requested:
+                yield self.extract_attachment(source_path, index)
+            return
+
+        message = self._load_message(source_path)
+        parts = list(self._iter_leaf_parts(message))
+        html_body = self._choose_best_body(
+            [self._safe_get_content(part) for part in parts
+             if part.get_content_type().lower() == "text/html" and not self._is_attachment(part)]
+        )
+        html_references = self._html_resource_references(html_body)
+        visible_parts = [
+            part for part in parts
+            if not self._is_body_text_part(part)
+            and not self._is_inline_resource(part, html_references)
+            and self._is_attachment(part)
+        ]
+        remaining = Counter(requested)
+        repeated: dict[int, ExtractedAttachment] = {}
+        for index in requested:
+            if not 0 <= index < len(visible_parts):
+                raise EmlParseError(tr("parse.attachment_not_found"))
+            if index in repeated:
+                extracted = repeated[index]
+            else:
+                part = visible_parts[index]
+                payload = part.get_payload(decode=True) or b""
+                extracted = ExtractedAttachment(
+                    info=self._attachment_info(part, index, payload=payload), payload=payload
+                )
+                if remaining[index] > 1:
+                    repeated[index] = extracted
+            remaining[index] -= 1
+            if not remaining[index]:
+                repeated.pop(index, None)
+            yield extracted
 
     def _parse_msg_file(self, path: Path) -> ParsedEmail:
         msg = self._load_msg(path)
@@ -403,10 +460,13 @@ class EmlParser:
             return True
         return bool(content_id) and disposition != "attachment"
 
-    def _attachment_info(self, part: EmailMessage | Message, index: int) -> AttachmentInfo:
+    def _attachment_info(
+        self, part: EmailMessage | Message, index: int, payload: bytes | None = None
+    ) -> AttachmentInfo:
         filename = part.get_filename() or f"attachment-{index + 1}"
         filename = self._decode_header_value(filename)
-        payload = part.get_payload(decode=True) or b""
+        if payload is None:
+            payload = part.get_payload(decode=True) or b""
         return AttachmentInfo(
             index=index,
             filename=filename,

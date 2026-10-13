@@ -1,0 +1,13 @@
+Read-only, narrowly scoped review for App07 EML Viewer.
+Read only docs/PERFORMANCE_IMPROVEMENT_PLAN.md and these two source files:
+src/eml_viewer/services/eml_parser.py
+src/eml_viewer/services/attachment_service.py
+
+Check the currently completed attachment-saving change. Report any concrete
+regression in displayed/extracted indexes, CID exclusion, selected payloads,
+duplicate request ordering, MSG compatibility, or partial failures. Cite
+function names. If no issue is found, say PASS with the scope of inspection.
+Do not inspect user emails, settings, release artifacts or other projects.
+Do not write files, run commands, fetch URLs, or delegate more work.
+Do not claim tests or performance measurements were run by you.
+Keep the response concise (at most 500 Korean words).
